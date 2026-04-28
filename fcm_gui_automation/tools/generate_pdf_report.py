@@ -1,0 +1,191 @@
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+from typing import Iterable
+
+from PIL import Image, ImageDraw, ImageFont
+import PIL.JpegImagePlugin  # noqa: F401
+
+
+ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_REPORT_MD = ROOT / "reports" / "automation_process_report.md"
+DEFAULT_OUTPUT_PDF = ROOT / "reports" / "automation_process_report.pdf"
+FONT_PATH = Path(r"C:\Windows\Fonts\malgun.ttf")
+FONT_BOLD_PATH = Path(r"C:\Windows\Fonts\malgunbd.ttf")
+
+PAGE_SIZE = (1240, 1754)
+MARGIN_X = 90
+MARGIN_Y = 90
+LINE_GAP = 10
+PARAGRAPH_GAP = 18
+
+
+def load_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    path = FONT_BOLD_PATH if bold else FONT_PATH
+    if path.exists():
+        return ImageFont.truetype(str(path), size=size)
+    return ImageFont.load_default()
+
+
+TITLE_FONT = load_font(30, bold=True)
+HEADER_FONT = load_font(24, bold=True)
+BODY_FONT = load_font(18, bold=False)
+CAPTION_FONT = load_font(16, bold=False)
+
+
+def sanitize_markdown_line(line: str) -> tuple[str, str]:
+    stripped = line.rstrip()
+    if stripped.startswith("# "):
+        return "title", stripped[2:].strip()
+    if stripped.startswith("## "):
+        return "header", stripped[3:].strip()
+    if stripped.startswith("### "):
+        return "subheader", stripped[4:].strip()
+    if stripped.startswith("- "):
+        return "bullet", "- " + stripped[2:].strip()
+    if stripped[:3].isdigit() and stripped[1:3] == ". ":
+        return "body", stripped
+    return "body", stripped
+
+
+def wrap_text(draw: ImageDraw.ImageDraw, text: str, font, max_width: int) -> list[str]:
+    if not text:
+        return [""]
+    words = text.split(" ")
+    lines: list[str] = []
+    current = ""
+    for word in words:
+        candidate = word if not current else f"{current} {word}"
+        width = draw.textlength(candidate, font=font)
+        if width <= max_width:
+            current = candidate
+        else:
+            if current:
+                lines.append(current)
+            current = word
+    if current:
+        lines.append(current)
+    return lines or [text]
+
+
+def draw_wrapped_lines(draw: ImageDraw.ImageDraw, y: int, text: str, font, kind: str) -> tuple[int, bool]:
+    max_width = PAGE_SIZE[0] - (MARGIN_X * 2)
+    indent = 18 if kind == "bullet" else 0
+    lines = wrap_text(draw, text, font, max_width - indent)
+    line_height = font.size + LINE_GAP
+    needed = len(lines) * line_height + PARAGRAPH_GAP
+    if y + needed > PAGE_SIZE[1] - MARGIN_Y:
+        return y, False
+    for index, line in enumerate(lines):
+        x = MARGIN_X + (indent if index > 0 and kind == "bullet" else 0)
+        draw.text((x, y), line, fill="black", font=font)
+        y += line_height
+    y += PARAGRAPH_GAP
+    return y, True
+
+
+def make_blank_page() -> Image.Image:
+    return Image.new("RGB", PAGE_SIZE, "white")
+
+
+def render_text_pages(lines: Iterable[str]) -> list[Image.Image]:
+    pages: list[Image.Image] = []
+    page = make_blank_page()
+    draw = ImageDraw.Draw(page)
+    y = MARGIN_Y
+
+    for raw_line in lines:
+        kind, text = sanitize_markdown_line(raw_line)
+        font = BODY_FONT
+        if kind == "title":
+            font = TITLE_FONT
+        elif kind in {"header", "subheader"}:
+            font = HEADER_FONT
+
+        y, drawn = draw_wrapped_lines(draw, y, text, font, kind)
+        if drawn:
+            continue
+
+        pages.append(page)
+        page = make_blank_page()
+        draw = ImageDraw.Draw(page)
+        y = MARGIN_Y
+        y, _ = draw_wrapped_lines(draw, y, text, font, kind)
+
+    pages.append(page)
+    return pages
+
+
+def fit_image(image: Image.Image, max_width: int, max_height: int) -> Image.Image:
+    copied = image.copy()
+    copied.thumbnail((max_width, max_height))
+    return copied
+
+
+def render_image_page(title: str, image_path: Path) -> Image.Image:
+    page = make_blank_page()
+    draw = ImageDraw.Draw(page)
+    y = MARGIN_Y
+    draw.text((MARGIN_X, y), title, fill="black", font=HEADER_FONT)
+    y += HEADER_FONT.size + 30
+
+    with Image.open(image_path) as source:
+        source = source.convert("RGB")
+        fitted = fit_image(source, PAGE_SIZE[0] - (MARGIN_X * 2), PAGE_SIZE[1] - y - 120)
+        x = (PAGE_SIZE[0] - fitted.width) // 2
+        page.paste(fitted, (x, y))
+        draw.text(
+            (MARGIN_X, PAGE_SIZE[1] - MARGIN_Y - 30),
+            image_path.name,
+            fill="black",
+            font=CAPTION_FONT,
+        )
+
+    return page
+
+
+def parse_image_spec(spec: str) -> tuple[str, Path]:
+    if "=" not in spec:
+        raise ValueError(f"Image spec must be title=path: {spec}")
+    title, raw_path = spec.split("=", 1)
+    return title.strip(), Path(raw_path.strip())
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("markdown", nargs="?", default=str(DEFAULT_REPORT_MD))
+    parser.add_argument("output", nargs="?", default=str(DEFAULT_OUTPUT_PDF))
+    parser.add_argument(
+        "--image",
+        action="append",
+        default=[],
+        help="Attach an image page using the form 'Title=path/to/image.png'",
+    )
+    args = parser.parse_args()
+
+    report_md = Path(args.markdown)
+    output_pdf = Path(args.output)
+
+    lines = report_md.read_text(encoding="utf-8").splitlines()
+    pages = render_text_pages(lines)
+
+    screenshots = [
+        ("Failure Screenshot 1", ROOT / "reports" / "screenshots" / "20260427_224325_failure.png"),
+        ("Failure Screenshot 2", ROOT / "reports" / "screenshots" / "20260427_224523_failure.png"),
+        ("Success Screenshot", ROOT / "reports" / "screenshots" / "20260427_224542_basic_test_success.png"),
+    ]
+    screenshots.extend(parse_image_spec(spec) for spec in args.image)
+
+    for title, path in screenshots:
+        if path.exists():
+            pages.append(render_image_page(title, path))
+
+    first, rest = pages[0], pages[1:]
+    first.save(output_pdf, save_all=True, append_images=rest, resolution=150.0)
+    print(output_pdf)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

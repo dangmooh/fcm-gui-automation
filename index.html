@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FCM Program</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="app-shell">
+    <section class="panel">
+      <p class="eyebrow">Firebase Cloud Messaging</p>
+      <h1>FCM 전송 프로그램</h1>
+      <p class="description">
+        버튼과 입력창이 포함된 기본 화면입니다. 이후 실제 FCM 연동 기능을 붙일 수 있도록
+        구조를 먼저 준비했습니다.
+      </p>
+
+      <form id="fcmForm" class="form">
+        <label for="token">FCM 토큰</label>
+        <input
+          id="token"
+          name="token"
+          type="text"
+          placeholder="수신 대상 FCM 토큰을 입력하세요"
+        >
+
+        <label for="title">알림 제목</label>
+        <input
+          id="title"
+          name="title"
+          type="text"
+          placeholder="예: 테스트 알림"
+        >
+
+        <label for="message">알림 내용</label>
+        <textarea
+          id="message"
+          name="message"
+          rows="6"
+          placeholder="보낼 메시지를 입력하세요"
+        ></textarea>
+
+        <button type="submit" class="primary-button">전송</button>
+      </form>
+
+      <div id="statusBox" class="status-box" aria-live="polite">
+        아직 전송하지 않았습니다.
+      </div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
