@@ -39,6 +39,15 @@ class ControlPanelWindow(QMainWindow):
         description_label.setObjectName("description_label")
         description_label.setWordWrap(True)
 
+        # v1.1.0: sample status indicator for target-based color verification.
+        self.status_lamp = QLabel("Status Lamp: READY")
+        self.status_lamp.setObjectName("status_lamp")
+        self.status_lamp.setFixedHeight(42)
+        self.status_lamp.setStyleSheet(
+            "background-color: #1f6feb; color: white; font-weight: bold; "
+            "border-radius: 8px; padding-left: 12px;"
+        )
+
         input_group = QGroupBox("Input Area")
         input_group.setObjectName("input_group")
         input_layout = QGridLayout()
@@ -112,6 +121,7 @@ class ControlPanelWindow(QMainWindow):
 
         root_layout.addWidget(title_label)
         root_layout.addWidget(description_label)
+        root_layout.addWidget(self.status_lamp)
         root_layout.addWidget(input_group)
         root_layout.addWidget(button_group)
         root_layout.addWidget(status_title)

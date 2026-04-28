@@ -11,6 +11,15 @@ class RecognitionAdapter:
     def verify_text(self, target: str, expected: str) -> None:
         raise NotImplementedError
 
+    def verify_color(
+        self,
+        target: str,
+        region: dict,
+        expected_color: str,
+        min_ratio: float,
+    ) -> None:
+        raise NotImplementedError
+
     def capture_window(self, name: str) -> None:
         raise NotImplementedError
 

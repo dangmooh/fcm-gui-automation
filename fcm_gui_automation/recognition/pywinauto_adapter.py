@@ -9,6 +9,7 @@ from pywinauto.timings import TimeoutError
 
 from core.screenshot import build_screenshot_path
 from recognition.base import RecognitionAdapter
+from recognition.color_adapter import ColorAdapter
 
 
 class PyWinAutoAdapter(RecognitionAdapter):
@@ -19,6 +20,7 @@ class PyWinAutoAdapter(RecognitionAdapter):
         self.app = None
         self.window = None
         self.process_started = False
+        self.color_adapter = ColorAdapter()
 
     @property
     def app_config(self) -> dict:
@@ -118,6 +120,34 @@ class PyWinAutoAdapter(RecognitionAdapter):
                 f"Expected text not found. expected={expected!r}, actual={current_text!r}"
             )
         self.logger.info("Verified text: %s", expected)
+
+    def verify_color(
+        self,
+        target: str,
+        region: dict,
+        expected_color: str,
+        min_ratio: float,
+    ) -> None:
+        if self.window is None:
+            raise RuntimeError("Window is not connected.")
+
+        screenshot = self.window.capture_as_image()
+        result = self.color_adapter.verify_target_color(
+            screenshot=screenshot,
+            target=target,
+            region=region,
+            expected_color=expected_color,
+            min_ratio=min_ratio,
+        )
+        self.logger.info(
+            "Verified target color: target=%s, expected_color=%s, "
+            "detected_ratio=%.4f, min_ratio=%.4f, region=%s",
+            result.target,
+            result.expected_color,
+            result.detected_ratio,
+            result.min_ratio,
+            result.region,
+        )
 
     def capture_window(self, name: str) -> None:
         if self.window is None:
