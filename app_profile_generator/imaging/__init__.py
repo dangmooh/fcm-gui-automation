@@ -1,0 +1,1 @@
+"""Screenshot annotation helpers."""
