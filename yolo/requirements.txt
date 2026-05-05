@@ -1,0 +1,7 @@
+numpy==1.26.4
+opencv-python>=4.9,<5
+torch==2.5.1
+torchvision==0.20.1
+ultralytics
+huggingface_hub
+reportlab

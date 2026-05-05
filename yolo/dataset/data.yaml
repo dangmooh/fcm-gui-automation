@@ -1,0 +1,15 @@
+# YOLO dataset config example for UI element detection.
+# Replace the path with your local absolute or relative dataset path.
+path: ./yolo/dataset
+train: images/train
+val: images/val
+test: images/test
+
+names:
+  0: button
+  1: text
+  2: input_field
+  3: checkbox
+  4: dropdown
+  5: icon
+  6: popup

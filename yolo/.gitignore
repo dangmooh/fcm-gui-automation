@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.ultralytics/
+ultralytics_config/
+
+models/
+screenshots/
+outputs/
+runs/
+
+dataset/images/
+dataset/labels/

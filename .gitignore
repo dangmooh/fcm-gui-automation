@@ -13,3 +13,4 @@ fcm_gui_automation/reports/*.pdf
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+Ultralytics/
