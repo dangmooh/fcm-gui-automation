@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import time
 
+import yaml
 from pywinauto import Application
 from pywinauto.findwindows import ElementNotFoundError
 from pywinauto.timings import TimeoutError
@@ -153,9 +154,49 @@ class PyWinAutoAdapter(RecognitionAdapter):
         if self.window is None:
             raise RuntimeError("Window is not connected.")
         screenshot_path = build_screenshot_path(self.base_dir, name)
+        self.capture_window_to(screenshot_path)
+
+    def capture_window_to(self, path: Path) -> None:
+        if self.window is None:
+            raise RuntimeError("Window is not connected.")
+        path.parent.mkdir(parents=True, exist_ok=True)
         image = self.window.capture_as_image()
-        image.save(screenshot_path)
-        self.logger.info("Saved screenshot: %s", screenshot_path)
+        image.save(path)
+        self.logger.info("Saved screenshot: %s", path)
+
+    def dump_controls_to(self, path: Path) -> None:
+        if self.window is None:
+            raise RuntimeError("Window is not connected.")
+
+        controls = []
+        for control in self.window.descendants():
+            element_info = control.element_info
+            rectangle = None
+            try:
+                rect = control.rectangle()
+                rectangle = {
+                    "left": rect.left,
+                    "top": rect.top,
+                    "right": rect.right,
+                    "bottom": rect.bottom,
+                }
+            except Exception:
+                pass
+
+            controls.append(
+                {
+                    "name": getattr(element_info, "name", "") or "",
+                    "automation_id": getattr(element_info, "automation_id", "") or "",
+                    "control_type": getattr(element_info, "control_type", "") or "",
+                    "class_name": getattr(element_info, "class_name", "") or "",
+                    "rectangle": rectangle,
+                }
+            )
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as file:
+            yaml.safe_dump({"controls": controls}, file, allow_unicode=True, sort_keys=False)
+        self.logger.info("Saved controls dump: %s", path)
 
     def close(self) -> None:
         if self.window is None:
