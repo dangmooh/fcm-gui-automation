@@ -26,6 +26,19 @@ class Decision(str, Enum):
     RECOVER_AND_RESTART_SCENARIO = "recover_and_restart_scenario"
 
 
+class MonitorKind(str, Enum):
+    VALUE = "value"
+    FLAG = "flag"
+
+
+class MonitorSource(str, Enum):
+    OCR = "ocr"
+    COLOR = "color"
+
+
+SUPPORTED_FLAG_COLORS = {"red", "green", "blue"}
+
+
 FAILURE_PRIORITY = {
     FailureLevel.NONE: 0,
     FailureLevel.SIMPLE: 1,
@@ -60,6 +73,29 @@ class DecisionResult:
     level: FailureLevel
     reason: str
     evidence_path: str | None = None
+
+
+@dataclass(frozen=True)
+class EmergencyTarget:
+    name: str
+    kind: MonitorKind
+    source: MonitorSource
+    target: str
+    parser: str | None = None
+    min_value: float | None = None
+    max_value: float | None = None
+    allowed_colors: list[str] = field(default_factory=list)
+    forbidden_colors: list[str] = field(default_factory=list)
+    min_ratio: float | None = None
+
+
+@dataclass(frozen=True)
+class ScenarioRestartPolicy:
+    max_restarts: int = 3
+    current_restarts: int = 0
+
+    def can_restart(self) -> bool:
+        return self.current_restarts < self.max_restarts
 
 
 def highest_failure_level(results: list[SingleCheckResult]) -> FailureLevel:

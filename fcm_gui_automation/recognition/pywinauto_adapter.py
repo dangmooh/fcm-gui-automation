@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import time
+from typing import Any
 
 import yaml
+from PIL import Image, ImageDraw
+from PIL import ImageGrab
 from pywinauto import Application
 from pywinauto.findwindows import ElementNotFoundError
 from pywinauto.timings import TimeoutError
@@ -22,6 +26,7 @@ class PyWinAutoAdapter(RecognitionAdapter):
         self.window = None
         self.process_started = False
         self.color_adapter = ColorAdapter()
+        self.profile = self._load_profile()
 
     @property
     def app_config(self) -> dict:
@@ -48,11 +53,12 @@ class PyWinAutoAdapter(RecognitionAdapter):
             self.app = Application(backend=backend).start(command, wait_for_idle=False)
             self.process_started = True
 
-        if self.process_started:
-            time.sleep(1.0)
-            self.window = self.app.top_window()
-        else:
+        if title_re:
+            if self.process_started:
+                time.sleep(1.0)
             self.window = self.app.window(title_re=title_re)
+        else:
+            self.window = self.app.top_window()
 
         self.window.wait("visible enabled ready", timeout=timeout)
         self.window.set_focus()
@@ -65,62 +71,285 @@ class PyWinAutoAdapter(RecognitionAdapter):
             return f'{python_command} "{script_path}"'
         return f'"{script_path}"'
 
-    def _child(self, target: str):
+    def _slug(self, value: str) -> str:
+        text = value.strip()
+        if not text.isupper():
+            text = re.sub(r"(?<!^)(?=[A-Z])", "_", text)
+        text = re.sub(r"[^0-9A-Za-z_]+", "_", text).strip("_").lower()
+        text = re.sub(r"_+", "_", text)
+        return text
+
+    def _load_profile(self) -> dict[str, Any] | None:
+        configured_path = self.app_config.get("profile_path")
+        profile_path = None
+        if configured_path:
+            profile_path = Path(configured_path).expanduser()
+            if not profile_path.is_absolute():
+                profile_path = (self.base_dir / profile_path).resolve()
+        else:
+            generated_root = self.base_dir.parent / "profiles" / "generated"
+            candidates = sorted(
+                generated_root.glob("*/hierarchical_profile.yaml"),
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            ) if generated_root.exists() else []
+            profile_path = candidates[0] if candidates else None
+
+        if profile_path is None or not profile_path.is_file():
+            return None
+
+        with profile_path.open("r", encoding="utf-8") as file:
+            profile = yaml.safe_load(file) or {}
+        if not isinstance(profile, dict):
+            return None
+        self.logger.info("Loaded app profile: %s", profile_path)
+        return profile
+
+    def _rect_contains_center(self, container, control) -> bool:
+        container_rect = container.rectangle()
+        control_rect = control.rectangle()
+        center_x = control_rect.left + (control_rect.width() / 2)
+        center_y = control_rect.top + (control_rect.height() / 2)
+        return (
+            container_rect.left <= center_x <= container_rect.right
+            and container_rect.top <= center_y <= container_rect.bottom
+        )
+
+    def _is_group_match(self, control, group: str) -> bool:
+        info = control.element_info
+        group_slug = self._slug(group)
+        return group_slug == self._slug(getattr(info, "name", "") or "")
+
+    def _is_target_match(self, control, target: str) -> bool:
+        info = control.element_info
+        target_slug = self._slug(target)
+        return target_slug == self._slug(getattr(info, "name", "") or "")
+
+    def _find_profile_target(self, group: str | None, target: str) -> dict[str, Any] | None:
+        if not self.profile:
+            return None
+
+        group_slug = self._slug(group or "")
+        target_slug = self._slug(target)
+        visible_name_match = None
+        for screen in (self.profile.get("screens") or {}).values():
+            for group_key, group_record in self._iter_profile_groups(screen.get("groups") or {}):
+                if group:
+                    group_names = {
+                        group_key,
+                        group_record.get("name", ""),
+                        ((group_record.get("scenario_ref") or {}).get("group") or ""),
+                    }
+                    if group_slug not in {self._slug(name) for name in group_names if name}:
+                        continue
+
+                for control_key, control_record in (group_record.get("controls") or {}).items():
+                    scenario_ref = control_record.get("scenario_ref") or {}
+                    scenario_names = {
+                        control_key,
+                        scenario_ref.get("target", ""),
+                    }
+                    profile_match = {
+                        "screen": screen,
+                        "group": group_record,
+                        "control": control_record,
+                    }
+                    if target_slug in {self._slug(name) for name in scenario_names if name}:
+                        return profile_match
+                    visible_name = control_record.get("name", "")
+                    if visible_name and target_slug == self._slug(visible_name):
+                        visible_name_match = profile_match
+        if visible_name_match is not None:
+            return visible_name_match
+        return None
+
+    def _iter_profile_groups(self, groups: dict[str, Any]):
+        for group_key, group_record in groups.items():
+            yield group_key, group_record
+            yield from self._iter_profile_groups(group_record.get("child_groups") or {})
+
+    def _current_region_from_profile(self, screen: dict[str, Any], region: dict[str, Any]) -> dict[str, float]:
+        if self.window is None:
+            raise RuntimeError("Window is not connected.")
+
+        profile_window = screen.get("window_rect") or {}
+        current_window = self.window.rectangle()
+        profile_x = float(profile_window.get("x", current_window.left))
+        profile_y = float(profile_window.get("y", current_window.top))
+        profile_width = max(1.0, float(profile_window.get("width", current_window.width())))
+        profile_height = max(1.0, float(profile_window.get("height", current_window.height())))
+
+        scale_x = current_window.width() / profile_width
+        scale_y = current_window.height() / profile_height
+        return {
+            "left": current_window.left + ((float(region.get("x", 0)) - profile_x) * scale_x),
+            "top": current_window.top + ((float(region.get("y", 0)) - profile_y) * scale_y),
+            "width": float(region.get("width", 0)) * scale_x,
+            "height": float(region.get("height", 0)) * scale_y,
+        }
+
+    def _rect_area(self, control) -> int:
+        rect = control.rectangle()
+        return max(0, rect.width()) * max(0, rect.height())
+
+    def _region_match_score(self, control, region: dict[str, float]) -> tuple[float, float]:
+        rect = control.rectangle()
+        left = max(rect.left, region["left"])
+        top = max(rect.top, region["top"])
+        right = min(rect.right, region["left"] + region["width"])
+        bottom = min(rect.bottom, region["top"] + region["height"])
+        overlap = max(0.0, right - left) * max(0.0, bottom - top)
+        target_area = max(1.0, region["width"] * region["height"])
+        area_delta = abs(self._rect_area(control) - target_area)
+        return (overlap / target_area, -area_delta)
+
+    def _center_in_region(self, control, region: dict[str, float]) -> bool:
+        rect = control.rectangle()
+        center_x = rect.left + (rect.width() / 2)
+        center_y = rect.top + (rect.height() / 2)
+        return (
+            region["left"] <= center_x <= region["left"] + region["width"]
+            and region["top"] <= center_y <= region["top"] + region["height"]
+        )
+
+    def _child_from_profile(self, target: str, group: str | None, descendants: list):
+        profile_target = self._find_profile_target(group, target)
+        if not profile_target:
+            return None
+
+        region = profile_target["control"].get("region") or {}
+        current_region = self._current_region_from_profile(profile_target["screen"], region)
+        candidates = []
+        for control in descendants:
+            try:
+                if self._center_in_region(control, current_region):
+                    candidates.append(control)
+            except Exception:
+                continue
+        if not candidates:
+            return None
+        return max(candidates, key=lambda control: self._region_match_score(control, current_region))
+
+    def _child(self, target: str, group: str | None = None):
         if self.window is None:
             raise RuntimeError("Window is not connected.")
         descendants = self.window.descendants()
+
+        if group:
+            profile_control = self._child_from_profile(target, group, descendants)
+            if profile_control is not None:
+                return profile_control
+
+            group_controls = [control for control in descendants if self._is_group_match(control, group)]
+            for group_control in group_controls:
+                for control in descendants:
+                    if control == group_control:
+                        continue
+                    try:
+                        if self._rect_contains_center(group_control, control) and self._is_target_match(
+                            control,
+                            target,
+                        ):
+                            return control
+                    except Exception:
+                        continue
+            raise ElementNotFoundError(
+                {"group": group, "target": target, "backend": self.app_config.get("backend")}
+            )
+
         for control in descendants:
-            auto_id = getattr(control.element_info, "automation_id", "") or ""
-            if auto_id == target or auto_id.endswith(f".{target}"):
+            if self._is_target_match(control, target):
                 return control
+        profile_control = self._child_from_profile(target, group, descendants)
+        if profile_control is not None:
+            return profile_control
         raise ElementNotFoundError({"target": target, "backend": self.app_config.get("backend")})
 
-    def set_text(self, target: str, value: str) -> None:
-        control = self._child(target)
-        control.set_focus()
-        try:
-            control.set_edit_text(value)
-        except Exception:
-            control.type_keys("^a{BACKSPACE}", set_foreground=True)
-            control.type_keys(value, with_spaces=True, set_foreground=True)
-
-    def click(self, target: str) -> None:
-        control = self._child(target)
+    def set_text(self, target: str, value: str, group: str | None = None) -> None:
+        control = self._child(target, group=group)
+        wrote = False
         try:
             control.set_focus()
-            control.click()
-            time.sleep(0.2)
-            return
+            control.set_edit_text(value)
+            wrote = True
         except Exception:
             pass
 
+        try:
+            control.click_input()
+            control.type_keys("^a{BACKSPACE}", set_foreground=True)
+            control.type_keys(value, with_spaces=True, set_foreground=True)
+            wrote = True
+        except Exception:
+            pass
+
+        if not wrote:
+            control.type_keys("^a{BACKSPACE}", set_foreground=True)
+            control.type_keys(value, with_spaces=True, set_foreground=True)
+
+    def click(self, target: str, group: str | None = None) -> None:
+        control = self._child(target, group=group)
+        clicked = False
         try:
             control.set_focus()
             control.click_input()
             time.sleep(0.2)
-            return
+            clicked = True
         except Exception:
             pass
 
         try:
+            control.set_focus()
             control.invoke()
             time.sleep(0.2)
-            return
+            clicked = True
         except Exception:
             pass
 
-        control.set_focus()
-        control.type_keys("{SPACE}", set_foreground=True)
-        time.sleep(0.2)
+        try:
+            control.set_focus()
+            control.click()
+            time.sleep(0.2)
+            clicked = True
+        except Exception:
+            pass
 
-    def verify_text(self, target: str, expected: str) -> None:
-        control = self._child(target)
-        current_text = control.window_text()
+        try:
+            control.set_focus()
+            control.type_keys("{ENTER}", set_foreground=True)
+            time.sleep(0.2)
+            clicked = True
+        except Exception:
+            pass
+
+        if not clicked:
+            control.set_focus()
+            control.type_keys("{SPACE}", set_foreground=True)
+            time.sleep(0.2)
+
+    def verify_text(self, target: str, expected: str, group: str | None = None) -> None:
+        control = self._child(target, group=group)
+        current_text = self._control_text(control)
         if expected not in current_text:
             raise AssertionError(
                 f"Expected text not found. expected={expected!r}, actual={current_text!r}"
             )
         self.logger.info("Verified text: %s", expected)
+
+    def _control_text(self, control) -> str:
+        values = []
+        for getter in (
+            lambda: control.window_text(),
+            lambda: "\n".join(control.texts()),
+            lambda: control.iface_value.CurrentValue,
+        ):
+            try:
+                value = getter()
+            except Exception:
+                continue
+            if value:
+                values.append(str(value))
+        return "\n".join(dict.fromkeys(values))
 
     def verify_color(
         self,
@@ -160,7 +389,19 @@ class PyWinAutoAdapter(RecognitionAdapter):
         if self.window is None:
             raise RuntimeError("Window is not connected.")
         path.parent.mkdir(parents=True, exist_ok=True)
-        image = self.window.capture_as_image()
+        try:
+            image = self.window.capture_as_image()
+        except Exception:
+            try:
+                rect = self.window.rectangle()
+                image = ImageGrab.grab(bbox=(rect.left, rect.top, rect.right, rect.bottom))
+            except Exception:
+                rect = self.window.rectangle()
+                width = max(1, rect.width())
+                height = max(1, rect.height())
+                image = Image.new("RGB", (width, height), "white")
+                draw = ImageDraw.Draw(image)
+                draw.text((20, 20), "Screenshot capture unavailable", fill="black")
         image.save(path)
         self.logger.info("Saved screenshot: %s", path)
 

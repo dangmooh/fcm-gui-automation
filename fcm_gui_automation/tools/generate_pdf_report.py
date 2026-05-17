@@ -162,6 +162,11 @@ def main() -> int:
         default=[],
         help="Attach an image page using the form 'Title=path/to/image.png'",
     )
+    parser.add_argument(
+        "--no-default-images",
+        action="store_true",
+        help="Do not attach the built-in automation screenshots.",
+    )
     args = parser.parse_args()
 
     report_md = Path(args.markdown)
@@ -170,11 +175,24 @@ def main() -> int:
     lines = report_md.read_text(encoding="utf-8").splitlines()
     pages = render_text_pages(lines)
 
-    screenshots = [
-        ("Failure Screenshot 1", ROOT / "reports" / "screenshots" / "20260427_224325_failure.png"),
-        ("Failure Screenshot 2", ROOT / "reports" / "screenshots" / "20260427_224523_failure.png"),
-        ("Success Screenshot", ROOT / "reports" / "screenshots" / "20260427_224542_basic_test_success.png"),
-    ]
+    screenshots = []
+    if not args.no_default_images:
+        screenshots.extend(
+            [
+                (
+                    "Failure Screenshot 1",
+                    ROOT / "reports" / "screenshots" / "20260427_224325_failure.png",
+                ),
+                (
+                    "Failure Screenshot 2",
+                    ROOT / "reports" / "screenshots" / "20260427_224523_failure.png",
+                ),
+                (
+                    "Success Screenshot",
+                    ROOT / "reports" / "screenshots" / "20260427_224542_basic_test_success.png",
+                ),
+            ]
+        )
     screenshots.extend(parse_image_spec(spec) for spec in args.image)
 
     for title, path in screenshots:

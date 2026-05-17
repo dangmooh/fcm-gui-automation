@@ -1,0 +1,85 @@
+name: "qt_complex_test"
+elements:
+  connection_lamp:
+    type: "indicator"
+    region:
+      x: 128
+      y: 132
+      width: 94
+      height: 32
+  running_lamp:
+    type: "indicator"
+    region:
+      x: 330
+      y: 132
+      width: 94
+      height: 32
+  result_lamp:
+    type: "indicator"
+    region:
+      x: 734
+      y: 132
+      width: 94
+      height: 32
+steps:
+  - action: "launch_or_connect"
+
+  - action: "click"
+    target: "connect_button"
+  - action: "verify_text"
+    target: "status_label"
+    value: "CONNECTED"
+  - action: "verify_color"
+    name: "connection lamp green check"
+    target: "connection_lamp"
+    expected_color: "green"
+    min_ratio: 0.3
+
+  - action: "set_text"
+    target: "frequency_input"
+    value: "1000"
+  - action: "click"
+    target: "frequency_apply_button"
+
+  - action: "set_text"
+    target: "power_input"
+    value: "-10"
+  - action: "click"
+    target: "power_apply_button"
+
+  - action: "click"
+    target: "start_button"
+  - action: "verify_text"
+    target: "status_label"
+    value: "RUNNING"
+  - action: "verify_color"
+    name: "running lamp blue check"
+    target: "running_lamp"
+    expected_color: "blue"
+    min_ratio: 0.3
+
+  - action: "click"
+    target: "run_test_button"
+  - action: "verify_text"
+    target: "result_label"
+    value: "PASS"
+  - action: "verify_color"
+    name: "result lamp green check"
+    target: "result_lamp"
+    expected_color: "green"
+    min_ratio: 0.3
+
+  - action: "click"
+    target: "open_dialog_button"
+  - action: "verify_text"
+    target: "status_label"
+    value: "DIALOG OPENED"
+  - action: "screenshot"
+    value: "qt_complex_dialog_opened"
+
+  - action: "click"
+    target: "reset_button"
+  - action: "verify_text"
+    target: "status_label"
+    value: "READY"
+  - action: "safe_close"

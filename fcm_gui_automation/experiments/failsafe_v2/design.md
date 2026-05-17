@@ -30,6 +30,7 @@ Examples:
 - A test parameter exceeds a configured limit.
 - A monitored value reaches a forbidden range.
 - A safety status target reports a critical state.
+- A monitored flag target shows a forbidden color/state.
 
 Expected behavior:
 
@@ -114,6 +115,102 @@ It should verify:
 - The target window is still available.
 - The expected result of the action is visible.
 - Step-level post conditions passed.
+
+## Emergency Monitoring Model
+
+Emergency checks are expected to be numerous. They should not be hard-coded in
+Python. They should be declared in YAML as monitored targets.
+
+There are two primary emergency target kinds:
+
+```text
+value
+flag
+```
+
+### Value Target
+
+A value target is a numeric value read from the GUI.
+
+Detection method:
+
+- Resolve the configured target name to a screen/control image.
+- Read text with OCR.
+- Parse the OCR text into a numeric value.
+- Compare it against configured `min` and `max` limits.
+
+This should reuse the existing OCR layer:
+
+- `recognition/ocr_adapter.py`
+- `OCRAdapter.read_text()`
+
+### Flag Target
+
+A flag target is a visual status indicator.
+
+Detection method:
+
+- Resolve the configured target name to a screen/control image.
+- Detect the target color/state using OpenCV-style image processing.
+- Compare the detected color/state with allowed or forbidden states.
+
+The design should expose this as OpenCV/color detection. The current codebase
+already has `recognition/color_adapter.py`, which can be used for the MVP while
+`OpenCVAdapter` is still reserved for a later phase.
+
+### Target Registry
+
+Emergency targets should be reusable. A scenario should define target metadata
+once, and emergency checks should reference those targets by name.
+
+Target metadata can include:
+
+- `kind`: `value` or `flag`
+- `source`: how to read it, for example `ocr` or `color`
+- `target`: named GUI/control/profile target to inspect
+- `parser`: how to parse OCR output, for example `float` or `int`
+- `min` / `max`: numeric limits for values
+- `allowed_colors`: valid flag colors
+- `forbidden_colors`: emergency flag colors
+- `min_ratio`: minimum color match ratio for flag detection
+
+This keeps emergency definitions data-driven and makes it possible to monitor
+many values and flags without changing code.
+
+### Target Resolution
+
+Fail-safe YAML should use target names, not raw regions.
+
+The runtime should resolve a target name through the existing recognition/profile
+layers. The target resolver must use the generated profile map as the primary
+source of target geometry and metadata.
+
+```text
+target name
+  -> generated profile or controls map lookup
+  -> UI Automation control lookup, if profile lookup is unavailable
+  -> captured image for OCR or color detection
+```
+
+This keeps scenario YAML stable even if the window moves or the screen scale
+changes. Raw coordinates can still exist inside generated profile data, but they
+should not be the primary authoring format for fail-safe rules.
+
+OCR value targets must represent already-normalized numeric values. Unit text is
+not stripped by fail-safe parsing. If the screen shows a unit, the selected
+target should point only to the numeric portion, or the profile map should define
+a numeric-only target. This keeps limit comparisons deterministic.
+
+For MVP flag detection, the supported colors are:
+
+```text
+red
+green
+blue
+```
+
+Custom HSV ranges are deferred until a real scenario needs colors outside this
+set.
 
 ## Proposed Runtime Flow
 
@@ -231,20 +328,36 @@ scenario:
     on_emergency: stop_scenario
     on_normal: recover_and_restart_scenario
     on_simple_final_failure: stop_scenario
+    max_scenario_restarts: 3
 
-    emergency_checks:
-      - name: voltage_limit
-        source: target_text
+    emergency_targets:
+      voltage_value:
+        kind: value
+        source: ocr
         target: voltage_value
         parser: float
         min: 0.0
         max: 5.0
 
-      - name: temperature_limit
-        source: target_text
+      temperature_value:
+        kind: value
+        source: ocr
         target: temperature_value
         parser: float
         max: 80.0
+
+      fault_flag:
+        kind: flag
+        source: color
+        target: fault_flag
+        forbidden_colors: [red]
+        allowed_colors: [green, blue]
+        min_ratio: 0.3
+
+    emergency_checks:
+      - target: voltage_value
+      - target: temperature_value
+      - target: fault_flag
 
     normal_checks:
       app_alive:
@@ -282,10 +395,41 @@ steps:
       on_normal:
         recovery:
           restart_app: true
+          max_scenario_restarts: 3
           actions:
             - action: click
               target: reconnect_button
           restart_scenario: true
+```
+
+Emergency target definitions can also be moved into a separate YAML file when
+the list becomes large:
+
+```yaml
+scenario:
+  name: operation_test
+  fail_safe:
+    emergency_targets_file: monitors/operation_emergency_targets.yaml
+```
+
+Example external monitor file:
+
+```yaml
+emergency_targets:
+  dc_link_voltage:
+    kind: value
+    source: ocr
+    target: dc_link_voltage_value
+    parser: float
+    min: 10.0
+    max: 15.0
+
+  inverter_fault_flag:
+    kind: flag
+    source: color
+    target: inverter_fault_lamp
+    forbidden_colors: [red]
+    min_ratio: 0.3
 ```
 
 ## Structured Results
@@ -331,7 +475,11 @@ Implement first:
 - Post-check app/window alive check.
 - Post-check expected text check.
 - Simple retry.
-- Emergency check interface and one target-text numeric limit check.
+- Emergency check interface.
+- YAML-driven emergency value target with OCR numeric limit check.
+- YAML-driven emergency flag target with color detection.
+- Profile-map-first target resolver.
+- Scenario restart limit with default maximum of 3 restarts.
 - Evidence report.
 
 Defer:
@@ -341,11 +489,23 @@ Defer:
 - Automatic popup handling.
 - Complex scenario resume points.
 - Parallel monitoring thread.
+- Unit-stripping OCR parsers. Emergency value targets should expose numeric
+  text only.
+- Full OpenCV adapter replacement if `ColorAdapter` is enough for MVP.
+
+## Resolved Design Decisions
+
+1. Target resolver must consult the generated profile map first.
+2. OCR value parsing does not remove units. Emergency value targets should be
+   numeric-only targets.
+3. MVP flag colors are limited to `red`, `green`, and `blue`.
+4. Scenario restart has a maximum count. The current planned default is 3.
+5. If scenario restart count exceeds the maximum, fail-safe stops the scenario
+   instead of restarting again.
 
 ## Open Questions
 
-1. Emergency values: are they read from GUI targets, logs, files, or device APIs?
-2. Program stopped detection: should it use process id, window existence, or both?
-3. Scenario restart: should it restart from step 1 or from a named checkpoint?
-4. Recovery actions: should they use the same action schema as normal steps?
-5. Should emergency close the GUI program, kill the process, or leave it open for inspection?
+1. Program stopped detection: should it use process id, window existence, or both?
+2. Scenario restart: should it restart from step 1 or from a named checkpoint?
+3. Recovery actions: should they use the same action schema as normal steps?
+4. Should emergency close the GUI program, kill the process, or leave it open for inspection?

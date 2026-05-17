@@ -3,6 +3,8 @@ from typing import Any, Dict, List, Tuple
 
 from PIL import ImageDraw, ImageFont
 
+from app_profile_generator.runtime.screenshot_capture import capture_window_image
+
 
 def _make_display_label(control: Dict[str, Any], fallback_index: int) -> str:
     automation_id = (control.get("automation_id") or "").strip()
@@ -66,7 +68,7 @@ def create_annotated_screenshot(
     controls: List[Dict[str, Any]],
     output_path: Path,
 ) -> List[Dict[str, Any]]:
-    image = window.capture_as_image().convert("RGB")
+    image = capture_window_image(window).convert("RGB")
     draw = ImageDraw.Draw(image)
     font = ImageFont.load_default()
 
@@ -76,9 +78,10 @@ def create_annotated_screenshot(
 
     controls_map: List[Dict[str, Any]] = []
 
-    for i, control in enumerate(controls, start=1):
+    for fallback_i, control in enumerate(controls):
         if "error" in control:
             continue
+        control_index = int(control.get("index", fallback_i))
 
         rect = control.get("rectangle", {}) or {}
         x = int(rect.get("x", 0))
@@ -99,12 +102,12 @@ def create_annotated_screenshot(
 
         control_type = control.get("control_type", "")
         box_color = _choose_box_color(control_type)
-        display_label = _make_display_label(control, i)
-        detail_label = _make_detail_label(control, i)
+        display_label = _make_display_label(control, control_index)
+        detail_label = _make_detail_label(control, control_index)
 
         draw.rectangle([(rel_x1, rel_y1), (rel_x2, rel_y2)], outline=box_color, width=2)
 
-        label = f"{i:03d}: {display_label}"
+        label = f"{control_index:03d}: {display_label}"
         label_x = max(rel_x1, 0)
         label_y = max(rel_y1 - 14, 0)
 
@@ -118,7 +121,7 @@ def create_annotated_screenshot(
 
         controls_map.append(
             {
-                "label_no": i,
+                "label_no": control_index,
                 "display_label": display_label,
                 "detail_label": detail_label,
                 "automation_id": control.get("automation_id", ""),

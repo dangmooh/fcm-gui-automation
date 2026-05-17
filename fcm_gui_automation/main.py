@@ -11,6 +11,15 @@ comtypes_cache_dir = base_dir / ".cache" / "comtypes"
 comtypes_cache_dir.mkdir(parents=True, exist_ok=True)
 os.environ.setdefault("COMTYPES_CACHE", str(comtypes_cache_dir))
 
+try:
+    import comtypes.client
+    import comtypes.gen
+
+    comtypes.client.gen_dir = str(comtypes_cache_dir)
+    comtypes.gen.__path__ = [str(comtypes_cache_dir)]
+except Exception:
+    pass
+
 from core.action_executor import ActionExecutor
 from core.fail_safe import FailSafeManager
 from core.logger import build_logger

@@ -47,16 +47,16 @@ class ActionExecutor:
         self.adapter.launch_or_connect()
 
     def _set_text(self, step: dict) -> None:
-        self.adapter.set_text(step["target"], step["value"])
+        self.adapter.set_text(step["target"], step["value"], group=step.get("group"))
 
     def _click(self, step: dict) -> None:
-        self.adapter.click(step["target"])
+        self.adapter.click(step["target"], group=step.get("group"))
 
     def _verify_text(self, step: dict) -> None:
         expected = step.get("value", step.get("expected"))
         if expected is None:
             raise ValueError("verify_text requires value or expected.")
-        self.adapter.verify_text(step["target"], expected)
+        self.adapter.verify_text(step["target"], expected, group=step.get("group"))
 
     def _verify_color(self, step: dict) -> None:
         target = step["target"]
