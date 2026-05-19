@@ -17,3 +17,5 @@ profiles/
 .mypy_cache/
 .ruff_cache/
 Ultralytics/
+offline_bundle_py311_win64/
+offline_bundle_py311_win64.zip
