@@ -8,9 +8,14 @@ env/
 fcm_gui_automation/.cache/
 fcm_gui_automation/reports/logs/
 fcm_gui_automation/reports/screenshots/
+fcm_gui_automation/reports/failures/
 fcm_gui_automation/reports/*.pdf
+app_profile_generator/.cache/
+profiles/
 
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 Ultralytics/
+offline_bundle_py311_win64/
+offline_bundle_py311_win64.zip

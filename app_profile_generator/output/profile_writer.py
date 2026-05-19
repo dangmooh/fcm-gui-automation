@@ -29,10 +29,16 @@ def write_profile_files(
     app_info: Dict[str, Any],
     elements: Dict[str, Any],
     controls_dump: List[Dict[str, Any]],
+    controls_raw: List[Dict[str, Any]] | None = None,
+    hierarchical_profile: Dict[str, Any] | None = None,
 ) -> None:
     write_yaml(output_dir / "app.yaml", {"app": app_info})
     write_yaml(output_dir / "elements.yaml", {"elements": elements})
     write_yaml(output_dir / "controls_dump.yaml", {"controls": controls_dump})
+    if controls_raw is not None:
+        write_yaml(output_dir / "controls_raw.yaml", {"controls": controls_raw})
+    if hierarchical_profile is not None:
+        write_yaml(output_dir / "hierarchical_profile.yaml", hierarchical_profile)
 
 
 def write_controls_map(output_dir: Path, controls_map: List[Dict[str, Any]]) -> None:

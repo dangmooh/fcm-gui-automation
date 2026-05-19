@@ -20,34 +20,43 @@ class ActionExecutor:
         }
         self.elements: dict = {}
 
-    def run(self, scenario: dict) -> None:
-        steps = scenario.get("steps", [])
-        if not steps:
-            raise ValueError("Scenario has no steps.")
+    def set_context(self, scenario: dict) -> None:
         # v1.1.0: color actions resolve a named target through scenario elements.
         self.elements = scenario.get("elements", {})
 
+    def execute_step(self, step: dict) -> None:
+        action = step["action"]
+        handler = self.action_handlers.get(action)
+        if handler is None:
+            raise ValueError(f"Unsupported action: {action}")
+
+        handler(step)
+
+    def run(self, scenario: dict) -> None:
+        """Backward-compatible direct run without fail-safe decisions."""
+        steps = scenario.get("steps", [])
+        if not steps:
+            raise ValueError("Scenario has no steps.")
+        self.set_context(scenario)
+
         for index, step in enumerate(steps, start=1):
-            action = step["action"]
-            self.logger.info("Step %s: %s", index, action)
-
-            handler = self.action_handlers.get(action)
-            if handler is None:
-                raise ValueError(f"Unsupported action: {action}")
-
-            handler(step)
+            self.logger.info("Step %s: %s", index, step["action"])
+            self.execute_step(step)
 
     def _launch_or_connect(self, step: dict) -> None:
         self.adapter.launch_or_connect()
 
     def _set_text(self, step: dict) -> None:
-        self.adapter.set_text(step["target"], step["value"])
+        self.adapter.set_text(step["target"], step["value"], group=step.get("group"))
 
     def _click(self, step: dict) -> None:
-        self.adapter.click(step["target"])
+        self.adapter.click(step["target"], group=step.get("group"))
 
     def _verify_text(self, step: dict) -> None:
-        self.adapter.verify_text(step["target"], step["value"])
+        expected = step.get("value", step.get("expected"))
+        if expected is None:
+            raise ValueError("verify_text requires value or expected.")
+        self.adapter.verify_text(step["target"], expected, group=step.get("group"))
 
     def _verify_color(self, step: dict) -> None:
         target = step["target"]

@@ -11,10 +11,21 @@ comtypes_cache_dir = base_dir / ".cache" / "comtypes"
 comtypes_cache_dir.mkdir(parents=True, exist_ok=True)
 os.environ.setdefault("COMTYPES_CACHE", str(comtypes_cache_dir))
 
+try:
+    import comtypes.client
+    import comtypes.gen
+
+    comtypes.client.gen_dir = str(comtypes_cache_dir)
+    comtypes.gen.__path__ = [str(comtypes_cache_dir)]
+except Exception:
+    pass
+
 from core.action_executor import ActionExecutor
 from core.fail_safe import FailSafeManager
 from core.logger import build_logger
+from core.scenario_runner import ScenarioRunner
 from core.scenario_loader import load_config, load_scenario
+from core.step_runner import StepRunner
 from recognition.pywinauto_adapter import PyWinAutoAdapter
 
 
@@ -128,11 +139,14 @@ def main() -> int:
     adapter = PyWinAutoAdapter(base_dir=base_dir, config=config, logger=logger)
     fail_safe = FailSafeManager(adapter=adapter, base_dir=base_dir, logger=logger)
     executor = ActionExecutor(adapter=adapter, logger=logger, fail_safe=fail_safe)
+    step_runner = StepRunner(executor=executor, logger=logger)
+    scenario_runner = ScenarioRunner(step_runner=step_runner, fail_safe=fail_safe, logger=logger)
 
     try:
         for index, scenario_path in enumerate(scenario_paths, start=1):
             scenario = load_scenario(scenario_path)
-            scenario_name = scenario.get("name", scenario_path.stem)
+            scenario_meta = scenario.get("scenario", {}) if isinstance(scenario.get("scenario"), dict) else {}
+            scenario_name = scenario.get("name") or scenario_meta.get("name") or scenario_path.stem
             logger.info(
                 "Running scenario %s/%s: %s (%s)",
                 index,
@@ -140,7 +154,10 @@ def main() -> int:
                 scenario_name,
                 scenario_path,
             )
-            executor.run(scenario)
+            completed = scenario_runner.run(scenario)
+            if not completed:
+                logger.error("Scenario stopped by fail-safe decision: %s", scenario_name)
+                return 1
 
         logger.info("All scenarios completed successfully.")
         return 0
