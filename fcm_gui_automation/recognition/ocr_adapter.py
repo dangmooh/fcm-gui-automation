@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import re
 import shutil
 from typing import Union
 
@@ -18,7 +19,7 @@ class OCRAdapter:
         self,
         tesseract_cmd: str | None = None,
         lang: str = "eng",
-        config: str = "--psm 6",
+        config: str = "--psm 6 -c tessedit_char_whitelist=0123456789.-+",
     ) -> None:
         resolved_cmd = tesseract_cmd or self._find_tesseract_cmd()
         if resolved_cmd:
@@ -44,6 +45,13 @@ class OCRAdapter:
             ) from error
 
         return self._normalize_text(text)
+
+    def read_number(self, source: ImageSource, preprocess: bool = True) -> float:
+        text = self.read_text(source, preprocess=preprocess)
+        match = re.search(r"[-+]?\d+(?:\.\d+)?", text)
+        if not match:
+            raise ValueError(f"OCR numeric value not found: {text!r}")
+        return float(match.group(0))
 
     def read_text_from_file(self, image_path: str | Path, preprocess: bool = True) -> str:
         return self.read_text(image_path, preprocess=preprocess)
@@ -99,7 +107,7 @@ class OCRAdapter:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Read text from an image with OCR.")
+    parser = argparse.ArgumentParser(description="Read a numeric value from an image with OCR.")
     parser.add_argument("image", help="Image path to read.")
     parser.add_argument("--lang", default="eng", help="Tesseract language code.")
     parser.add_argument(
@@ -117,7 +125,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     adapter = OCRAdapter(tesseract_cmd=args.tesseract_cmd, lang=args.lang)
-    print(adapter.read_text(args.image, preprocess=not args.no_preprocess))
+    print(adapter.read_number(args.image, preprocess=not args.no_preprocess))
     return 0
 
 
