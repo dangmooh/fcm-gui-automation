@@ -64,6 +64,9 @@ tree: a group becomes the direct child of the smallest larger group that
 contains its center point. Controls are placed under the smallest group that
 contains their center point. Scenario authors should use the reviewed group
 name and target name, not raw UI Automation ids.
+Regions in the generated profile use `window_ratio` coordinates. `x`, `y`,
+`width`, and `height` are stored as fractions of the captured window, so runtime
+lookup can survive window moves, resizes, resolution changes, and DPI changes.
 
 Example target shape:
 
@@ -80,6 +83,12 @@ screens:
               connect:
                 name: Connect
                 label_no: 45
+                region_units: window_ratio
+                region:
+                  x: 0.284375
+                  y: 0.7125
+                  width: 0.078125
+                  height: 0.05
                 scenario_ref:
                   group: Operation Group
                   target: connect
@@ -105,6 +114,14 @@ Target names are suggested from visible names only. The generator does not add
 control-type suffixes such as `_input`, `_button`, or `_label`; duplicate names
 are disambiguated with numeric suffixes for manual review.
 
+## MFCGridCtrl Cell Detection
+
+When pywinauto exposes a control whose class name is `MFCGridCtrl`, the
+generator crops that grid from the window screenshot and uses OpenCV line
+detection to split it into cells. Each detected cell is appended to the raw
+control list as a synthetic `Cell` controller with `element_type: grid_cell`,
+row/column metadata, and a normal profile entry.
+
 ## Scenario Discovery
 
 The generator can run one or more scenario files once and merge newly discovered
@@ -120,11 +137,29 @@ During discovery, the tool executes mutating steps such as `click` and
 `set_text`. After each step it inspects visible windows for the same process.
 If the UI tree changed, a new screen is added under the step's trigger target.
 
+To start from the main profile and then run every scenario in a directory once,
+use:
+
+```bash
+python -m app_profile_generator.main \
+  --app-path d:\app\fcm_desktop.py \
+  --discover-all-scenarios \
+  --discovery-scenario-dir d:\app\fcm_gui_automation\scenarios
+```
+
+In this mode the initial main window is treated as already profiled. The
+generator watches for additional visible windows, such as dialogs, while each
+scenario runs and appends those controllers as new screens. A
+`discovery_summary.yaml` file is written with per-scenario success, failure, and
+new-screen counts.
+
 Example discovered screen metadata:
 
 ```yaml
 discovered_by:
   type: scenario_step
+  scenario_name: qt_complex_test
+  scenario_path: d:\app\fcm_gui_automation\scenarios\qt_complex_test.yaml
   step_index: 18
   action: click
   trigger_target: open_dialog_button
@@ -142,6 +177,8 @@ for manual review.
 4. Open `controls_map.yaml` only when you need raw debug details.
 5. Use `--discovery-scenario` to append screens that only appear after user
    actions such as opening a dialog or switching tabs.
+6. Use `--discover-all-scenarios` when you want to run the full scenario folder
+   once and collect controllers from newly opened windows.
 
 ## Runtime Lookup
 

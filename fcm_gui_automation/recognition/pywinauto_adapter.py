@@ -168,12 +168,25 @@ class PyWinAutoAdapter(RecognitionAdapter):
             yield group_key, group_record
             yield from self._iter_profile_groups(group_record.get("child_groups") or {})
 
-    def _current_region_from_profile(self, screen: dict[str, Any], region: dict[str, Any]) -> dict[str, float]:
+    def _current_region_from_profile(
+        self,
+        screen: dict[str, Any],
+        region: dict[str, Any],
+        region_units: str | None = None,
+    ) -> dict[str, float]:
         if self.window is None:
             raise RuntimeError("Window is not connected.")
 
-        profile_window = screen.get("window_rect") or {}
         current_window = self.window.rectangle()
+        if region_units == "window_ratio" or self._looks_like_ratio_region(region):
+            return {
+                "left": current_window.left + (float(region.get("x", 0)) * current_window.width()),
+                "top": current_window.top + (float(region.get("y", 0)) * current_window.height()),
+                "width": float(region.get("width", 0)) * current_window.width(),
+                "height": float(region.get("height", 0)) * current_window.height(),
+            }
+
+        profile_window = screen.get("window_rect") or {}
         profile_x = float(profile_window.get("x", current_window.left))
         profile_y = float(profile_window.get("y", current_window.top))
         profile_width = max(1.0, float(profile_window.get("width", current_window.width())))
@@ -217,8 +230,13 @@ class PyWinAutoAdapter(RecognitionAdapter):
         if not profile_target:
             return None
 
-        region = profile_target["control"].get("region") or {}
-        current_region = self._current_region_from_profile(profile_target["screen"], region)
+        control_record = profile_target["control"]
+        region = control_record.get("region") or {}
+        current_region = self._current_region_from_profile(
+            profile_target["screen"],
+            region,
+            region_units=control_record.get("region_units"),
+        )
         candidates = []
         for control in descendants:
             try:
@@ -362,10 +380,11 @@ class PyWinAutoAdapter(RecognitionAdapter):
             raise RuntimeError("Window is not connected.")
 
         screenshot = self.window.capture_as_image()
+        screenshot_region = self._screenshot_region(region, screenshot.size)
         result = self.color_adapter.verify_target_color(
             screenshot=screenshot,
             target=target,
-            region=region,
+            region=screenshot_region,
             expected_color=expected_color,
             min_ratio=min_ratio,
         )
@@ -378,6 +397,25 @@ class PyWinAutoAdapter(RecognitionAdapter):
             result.min_ratio,
             result.region,
         )
+
+    def _screenshot_region(self, region: dict, image_size: tuple[int, int]) -> dict:
+        units = region.get("units") or region.get("region_units")
+        if units == "window_ratio" or self._looks_like_ratio_region(region):
+            width, height = image_size
+            return {
+                "x": int(float(region.get("x", 0)) * width),
+                "y": int(float(region.get("y", 0)) * height),
+                "width": int(float(region.get("width", 0)) * width),
+                "height": int(float(region.get("height", 0)) * height),
+            }
+        return region
+
+    def _looks_like_ratio_region(self, region: dict) -> bool:
+        try:
+            values = [float(region[key]) for key in ("x", "y", "width", "height")]
+        except Exception:
+            return False
+        return all(0.0 <= value <= 1.0 for value in values)
 
     def capture_window(self, name: str) -> None:
         if self.window is None:

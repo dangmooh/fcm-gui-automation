@@ -136,6 +136,12 @@ def create_annotated_screenshot(
                     "width": w,
                     "height": h,
                 },
+                "window_ratio_region": {
+                    "x": round(rel_x1 / max(1, image.width), 6),
+                    "y": round(rel_y1 / max(1, image.height), 6),
+                    "width": round(w / max(1, image.width), 6),
+                    "height": round(h / max(1, image.height), 6),
+                },
             }
         )
 

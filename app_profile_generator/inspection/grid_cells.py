@@ -1,0 +1,164 @@
+from __future__ import annotations
+
+from typing import Any, Dict, List
+
+from PIL import Image
+
+from app_profile_generator.runtime.screenshot_capture import capture_window_image
+
+
+GRID_CLASS_NAME = "MFCGridCtrl"
+MIN_CELL_WIDTH = 8
+MIN_CELL_HEIGHT = 8
+
+
+def detect_mfc_grid_cells(window, controls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    grid_controls = [
+        control
+        for control in controls
+        if (control.get("class_name") or "") == GRID_CLASS_NAME and "error" not in control
+    ]
+    if not grid_controls:
+        return []
+
+    try:
+        image = capture_window_image(window).convert("RGB")
+        window_rect = window.rectangle()
+    except Exception:
+        return []
+
+    next_index = _next_index(controls)
+    cells: List[Dict[str, Any]] = []
+    for grid in grid_controls:
+        detected_cells = detect_mfc_grid_cells_for_control(
+            grid=grid,
+            image=image,
+            window_rect=window_rect,
+            start_index=next_index,
+        )
+        cells.extend(detected_cells)
+        next_index += len(detected_cells)
+
+    return cells
+
+
+def detect_mfc_grid_cells_for_control(
+    grid: Dict[str, Any],
+    image: Image.Image,
+    window_rect,
+    start_index: int,
+) -> List[Dict[str, Any]]:
+    if (grid.get("class_name") or "") != GRID_CLASS_NAME or "error" in grid:
+        return []
+
+    rect = grid.get("rectangle", {}) or {}
+    crop_box = _crop_box(rect, window_rect, image)
+    if crop_box is None:
+        return []
+
+    crop = image.crop(crop_box)
+    cells: List[Dict[str, Any]] = []
+    for offset, (row, col, cell_box) in enumerate(_detect_cells(crop)):
+        left, top, right, bottom = cell_box
+        cell_rect = {
+            "x": int(rect.get("x", 0)) + left,
+            "y": int(rect.get("y", 0)) + top,
+            "width": right - left,
+            "height": bottom - top,
+        }
+        cells.append(
+            {
+                "index": start_index + offset,
+                "name": f"{grid.get('name') or 'MFCGridCtrl'} cell {row + 1},{col + 1}",
+                "control_type": "Cell",
+                "element_type": "grid_cell",
+                "automation_id": f"{grid.get('automation_id') or 'mfc_grid'}_r{row + 1}_c{col + 1}",
+                "class_name": "MFCGridCtrlCell",
+                "rectangle": cell_rect,
+                "enabled": grid.get("enabled"),
+                "visible": grid.get("visible"),
+                "parent_index": grid.get("index"),
+                "parent_class_name": GRID_CLASS_NAME,
+                "source": "opencv_mfc_grid_cell",
+                "grid_cell": {
+                    "row": row + 1,
+                    "column": col + 1,
+                },
+            }
+        )
+    return cells
+
+
+def _next_index(controls: List[Dict[str, Any]]) -> int:
+    indexes = [int(control.get("index", -1)) for control in controls if control.get("index") is not None]
+    return (max(indexes) + 1) if indexes else 0
+
+
+def _crop_box(rect: Dict[str, Any], window_rect, image: Image.Image) -> tuple[int, int, int, int] | None:
+    left = int(rect.get("x", 0)) - window_rect.left
+    top = int(rect.get("y", 0)) - window_rect.top
+    right = left + int(rect.get("width", 0))
+    bottom = top + int(rect.get("height", 0))
+    left = max(0, min(left, image.width))
+    top = max(0, min(top, image.height))
+    right = max(0, min(right, image.width))
+    bottom = max(0, min(bottom, image.height))
+    if right <= left or bottom <= top:
+        return None
+    return left, top, right, bottom
+
+
+def _detect_cells(image: Image.Image) -> List[tuple[int, int, tuple[int, int, int, int]]]:
+    try:
+        import cv2
+        import numpy as np
+    except Exception:
+        return []
+
+    array = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2GRAY)
+    binary = cv2.adaptiveThreshold(
+        array,
+        255,
+        cv2.ADAPTIVE_THRESH_MEAN_C,
+        cv2.THRESH_BINARY_INV,
+        15,
+        8,
+    )
+
+    horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (max(10, image.width // 20), 1))
+    vertical_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(10, image.height // 20)))
+    horizontal = cv2.morphologyEx(binary, cv2.MORPH_OPEN, horizontal_kernel)
+    vertical = cv2.morphologyEx(binary, cv2.MORPH_OPEN, vertical_kernel)
+
+    x_lines = _line_positions(vertical, axis=0)
+    y_lines = _line_positions(horizontal, axis=1)
+    if len(x_lines) < 2 or len(y_lines) < 2:
+        return []
+
+    cells = []
+    for row, (top, bottom) in enumerate(zip(y_lines, y_lines[1:])):
+        if bottom - top < MIN_CELL_HEIGHT:
+            continue
+        for col, (left, right) in enumerate(zip(x_lines, x_lines[1:])):
+            if right - left < MIN_CELL_WIDTH:
+                continue
+            cells.append((row, col, (left, top, right, bottom)))
+    return cells
+
+
+def _line_positions(mask, axis: int) -> List[int]:
+    import numpy as np
+
+    projection = np.sum(mask > 0, axis=axis)
+    threshold = max(2, int(mask.shape[axis] * 0.35))
+    raw_positions = [idx for idx, value in enumerate(projection) if value >= threshold]
+    if not raw_positions:
+        return []
+
+    clusters: List[List[int]] = [[raw_positions[0]]]
+    for position in raw_positions[1:]:
+        if position - clusters[-1][-1] <= 2:
+            clusters[-1].append(position)
+        else:
+            clusters.append([position])
+    return [int(sum(cluster) / len(cluster)) for cluster in clusters]

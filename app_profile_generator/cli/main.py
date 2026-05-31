@@ -21,9 +21,6 @@ from app_profile_generator.output.profile_writer import (
 )
 
 
-DEFAULT_YOLO_MODEL = "yolo\\models\\gpa-gui-detector\\model.pt"
-
-
 def select_app_with_file_explorer() -> Optional[str]:
     try:
         import tkinter as tk
@@ -66,17 +63,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="Scenario YAML to run once and merge newly discovered screens into hierarchical_profile.yaml.",
     )
-    parser.add_argument("--discovery-delay", type=float, default=0.5)
-    parser.add_argument("--yolo-model", type=str, default=DEFAULT_YOLO_MODEL)
-    parser.add_argument("--yolo-conf", type=float, default=0.25)
-    parser.add_argument("--yolo-iou", type=float, default=0.7)
-    parser.add_argument("--yolo-imgsz", type=int, default=1280)
-    parser.add_argument("--yolo-device", type=str, default=None)
     parser.add_argument(
-        "--no-yolo",
+        "--discover-all-scenarios",
         action="store_true",
-        help="Skip YOLO child scanning.",
+        help="Run every YAML scenario in --discovery-scenario-dir once and merge discovered screens.",
     )
+    parser.add_argument(
+        "--discovery-scenario-dir",
+        type=str,
+        default="fcm_gui_automation/scenarios",
+        help="Directory used by --discover-all-scenarios.",
+    )
+    parser.add_argument("--discovery-delay", type=float, default=0.5)
     parser.add_argument(
         "--sync-profile-dir",
         type=str,
@@ -97,16 +95,10 @@ def main() -> int:
 
     parser = build_parser()
     args = parser.parse_args()
-    yolo_model = None if args.no_yolo else args.yolo_model
 
     if args.sync_profile_dir:
         return sync_profile_dir(
             profile_dir=Path(args.sync_profile_dir).expanduser().resolve(),
-            yolo_model=yolo_model,
-            yolo_conf=args.yolo_conf,
-            yolo_iou=args.yolo_iou,
-            yolo_imgsz=args.yolo_imgsz,
-            yolo_device=args.yolo_device,
         )
 
     app_path = args.app_path
@@ -175,28 +167,8 @@ def main() -> int:
     except Exception as exc:
         screenshot_status = f"screenshot failed: {exc}"
 
-    yolo_status = "skipped"
-    if yolo_model and screenshot_path.is_file():
-        from app_profile_generator.inspection.yolo_children import enrich_controls_with_yolo_children
-
-        try:
-            controls = enrich_controls_with_yolo_children(
-                controls=controls,
-                screenshot_path=screenshot_path,
-                window_rect=window_info["window_rect"],
-                model_path=Path(yolo_model),
-                output_dir=output_dir,
-                conf=args.yolo_conf,
-                iou=args.yolo_iou,
-                imgsz=args.yolo_imgsz,
-                device=args.yolo_device,
-            )
-            yolo_status = f"completed with model: {yolo_model}"
-        except Exception as exc:
-            yolo_status = f"failed: {exc}"
-
     controls_dump = build_controls_dump_for_review(controls)
-    elements = build_elements_from_controls(controls)
+    elements = build_elements_from_controls(controls, window_rect=window_info["window_rect"])
     hierarchical_profile = build_hierarchical_profile(
         app_info=app_info,
         controls=controls,
@@ -224,26 +196,97 @@ def main() -> int:
         annotated_status = f"annotated screenshot failed: {exc}"
 
     discovery_status = "not requested"
-    if args.discovery_scenario:
+    discovery_summary = None
+    discovered_controls = []
+    if args.discovery_scenario or args.discover_all_scenarios:
         from app_profile_generator.inspection.scenario_discovery import (
+            discover_profile_from_scenarios,
             discover_profile_from_scenario,
             load_discovery_scenario,
+            load_discovery_scenarios_from_dir,
         )
 
         discovered_count_before = len(hierarchical_profile.get("screens", {}))
+        scenario_entries = []
         for scenario_path in args.discovery_scenario:
-            scenario = load_discovery_scenario(Path(scenario_path).expanduser().resolve())
-            hierarchical_profile = discover_profile_from_scenario(
+            resolved_path = Path(scenario_path).expanduser().resolve()
+            scenario_entries.append((resolved_path, load_discovery_scenario(resolved_path)))
+
+        if args.discover_all_scenarios:
+            scenario_dir = Path(args.discovery_scenario_dir).expanduser().resolve()
+            known_paths = {path for path, _scenario in scenario_entries}
+            for scenario_path, scenario in load_discovery_scenarios_from_dir(scenario_dir):
+                if scenario_path not in known_paths:
+                    scenario_entries.append((scenario_path, scenario))
+
+        if args.discover_all_scenarios:
+            hierarchical_profile, discovery_summary = discover_profile_from_scenarios(
                 profile=hierarchical_profile,
                 initial_window=window,
-                scenario=scenario,
+                scenarios=scenario_entries,
                 delay=args.discovery_delay,
+                discovered_controls=discovered_controls,
             )
+        else:
+            completed = []
+            failed = []
+            for scenario_path, scenario in scenario_entries:
+                before = len(hierarchical_profile.get("screens", {}))
+                step_errors = []
+                try:
+                    hierarchical_profile = discover_profile_from_scenario(
+                        profile=hierarchical_profile,
+                        initial_window=window,
+                        scenario=scenario,
+                        delay=args.discovery_delay,
+                        scenario_path=scenario_path,
+                        step_errors=step_errors,
+                        discovered_controls=discovered_controls,
+                    )
+                    after = len(hierarchical_profile.get("screens", {}))
+                    completed.append(
+                        {
+                            "path": str(scenario_path),
+                            "name": scenario.get("name") or scenario_path.stem,
+                            "new_screens": after - before,
+                            "step_errors": step_errors,
+                        }
+                    )
+                except Exception as exc:
+                    failed.append(
+                        {
+                            "path": str(scenario_path),
+                            "name": scenario.get("name") or scenario_path.stem,
+                            "error": str(exc),
+                        }
+                    )
+            discovery_summary = {
+                "scenario_count": len(scenario_entries),
+                "completed": completed,
+                "failed": failed,
+                "screens_before": discovered_count_before,
+                "screens_after": len(hierarchical_profile.get("screens", {})),
+                "discovered_screen_count": len(hierarchical_profile.get("screens", {}))
+                - discovered_count_before,
+                "discovered_controller_count": len(discovered_controls),
+            }
+        discovery_summary["discovered_controller_count"] = len(discovered_controls)
+        if discovered_controls:
+            controls.extend(discovered_controls)
+            controls_dump = build_controls_dump_for_review(controls)
+            elements = build_elements_from_controls(controls, window_rect=window_info["window_rect"])
+            write_yaml(output_dir / "controls_raw.yaml", {"controls": controls})
+            write_yaml(output_dir / "controls_dump.yaml", {"controls": controls_dump})
+            write_yaml(output_dir / "elements.yaml", {"elements": elements})
         write_yaml(output_dir / "hierarchical_profile.yaml", hierarchical_profile)
+        write_yaml(output_dir / "discovery_summary.yaml", discovery_summary)
         discovered_count_after = len(hierarchical_profile.get("screens", {}))
         discovery_status = (
-            f"merged {discovered_count_after - discovered_count_before} discovered screens"
+            f"merged {discovered_count_after - discovered_count_before} discovered screens "
+            f"from {discovery_summary['scenario_count']} scenarios"
         )
+        if discovery_summary["failed"]:
+            discovery_status += f" ({len(discovery_summary['failed'])} scenarios had errors)"
 
     print("\\nProfile generated successfully.")
     print(f"Output directory: {output_dir.resolve()}")
@@ -252,9 +295,11 @@ def main() -> int:
     print("- controls_dump.yaml")
     print("- controls_raw.yaml")
     print("- hierarchical_profile.yaml")
+    if discovery_summary is not None:
+        print("- discovery_summary.yaml")
     print(f"- {screenshot_status}")
     print(f"- {annotated_status}")
-    print(f"- yolo child scan: {yolo_status}")
+    print("- MFCGridCtrl cell scan: enabled for matching controls")
     print(f"- scenario discovery: {discovery_status}")
 
     print("\\nNext step:")
@@ -268,11 +313,6 @@ def main() -> int:
 
 def sync_profile_dir(
     profile_dir: Path,
-    yolo_model: str | None = DEFAULT_YOLO_MODEL,
-    yolo_conf: float = 0.25,
-    yolo_iou: float = 0.7,
-    yolo_imgsz: int = 1280,
-    yolo_device: str | None = None,
 ) -> int:
     app_path = profile_dir / "app.yaml"
     controls_dump_path = profile_dir / "controls_dump.yaml"
@@ -294,32 +334,10 @@ def sync_profile_dir(
         raw_controls = (yaml.safe_load(file) or {}).get("controls", [])
 
     controls = apply_review_names(raw_controls, review_controls)
-    yolo_status = "skipped"
-    if yolo_model:
-        screenshot_path = profile_dir / "screenshot.png"
-        if not screenshot_path.is_file():
-            print(f"[ERROR] Screenshot not found for YOLO sync: {screenshot_path}")
-            return 1
-        from app_profile_generator.inspection.yolo_children import enrich_controls_with_yolo_children
-
-        controls = enrich_controls_with_yolo_children(
-            controls=controls,
-            screenshot_path=screenshot_path,
-            window_rect=app_info.get("window_rect", {}),
-            model_path=Path(yolo_model),
-            output_dir=profile_dir,
-            conf=yolo_conf,
-            iou=yolo_iou,
-            imgsz=yolo_imgsz,
-            device=yolo_device,
-        )
-        write_yaml(controls_raw_path, {"controls": controls})
-        yolo_status = f"completed with model: {yolo_model}"
 
     hierarchical_profile = build_hierarchical_profile(app_info=app_info, controls=controls)
     write_yaml(hierarchical_profile_path, hierarchical_profile)
     print(f"Synced hierarchical profile: {hierarchical_profile_path}")
-    print(f"YOLO child scan: {yolo_status}")
     return 0
 
 

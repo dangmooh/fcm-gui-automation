@@ -110,7 +110,7 @@ def _is_profile_control(control: Dict[str, Any]) -> bool:
     return int(rect.get("width", 0)) > 0 and int(rect.get("height", 0)) > 0
 
 
-def _region(control: Dict[str, Any]) -> Dict[str, int]:
+def _absolute_region(control: Dict[str, Any]) -> Dict[str, int]:
     rect = control.get("rectangle", {}) or {}
     return {
         "x": int(rect.get("x", 0)),
@@ -120,15 +120,34 @@ def _region(control: Dict[str, Any]) -> Dict[str, int]:
     }
 
 
+def _ratio_region(control: Dict[str, Any], window_rect: Dict[str, Any]) -> Dict[str, float]:
+    if control.get("rectangle_ratio"):
+        return control["rectangle_ratio"]
+
+    region = _absolute_region(control)
+    window_width = max(1.0, float(window_rect.get("width", 0)))
+    window_height = max(1.0, float(window_rect.get("height", 0)))
+    window_x = float(window_rect.get("x", 0))
+    window_y = float(window_rect.get("y", 0))
+    return {
+        "x": round((region["x"] - window_x) / window_width, 6),
+        "y": round((region["y"] - window_y) / window_height, 6),
+        "width": round(region["width"] / window_width, 6),
+        "height": round(region["height"] / window_height, 6),
+    }
+
+
 def _control_record(
     control: Dict[str, Any],
     group_name: str,
     target_name: str,
+    window_rect: Dict[str, Any],
 ) -> Dict[str, Any]:
     record = {
         "name": control.get("name", ""),
         "label_no": control.get("index"),
-        "region": _region(control),
+        "region": _ratio_region(control, window_rect),
+        "region_units": "window_ratio",
         "scenario_ref": {
             "group": group_name,
             "target": target_name,
@@ -140,11 +159,12 @@ def _control_record(
     return record
 
 
-def _group_record(control: Dict[str, Any], group_path: str) -> Dict[str, Any]:
+def _group_record(control: Dict[str, Any], group_path: str, window_rect: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "name": _visible_name(control) or group_path,
         "label_no": control.get("index"),
-        "region": _region(control),
+        "region": _ratio_region(control, window_rect),
+        "region_units": "window_ratio",
         "scenario_ref": {
             "group": _visible_name(control) or group_path,
             "target": None,
@@ -155,12 +175,12 @@ def _group_record(control: Dict[str, Any], group_path: str) -> Dict[str, Any]:
 
 
 def _area(control: Dict[str, Any]) -> int:
-    region = _region(control)
+    region = _absolute_region(control)
     return region["width"] * region["height"]
 
 
 def _center(control: Dict[str, Any]) -> tuple[float, float]:
-    region = _region(control)
+    region = _absolute_region(control)
     return (
         region["x"] + (region["width"] / 2),
         region["y"] + (region["height"] / 2),
@@ -168,7 +188,7 @@ def _center(control: Dict[str, Any]) -> tuple[float, float]:
 
 
 def _contains_point(container: Dict[str, Any], point: tuple[float, float]) -> bool:
-    region = _region(container)
+    region = _absolute_region(container)
     x, y = point
     return (
         region["x"] <= x <= region["x"] + region["width"]
@@ -222,6 +242,7 @@ def build_hierarchical_profile(
     }
     profile: Dict[str, Any] = {
         "profile_version": 1,
+        "coordinate_system": "window_ratio",
         "naming_policy": {
             "mode": "manual_review",
             "description": (
@@ -253,6 +274,7 @@ def build_hierarchical_profile(
     }
 
     screen = profile["screens"][screen_key]
+    window_rect = app_info.get("window_rect", {}) or {}
     groups = screen["groups"]
     group_nodes: Dict[str, Dict[str, Any]] = {}
     group_controls: list[tuple[str, Dict[str, Any]]] = []
@@ -264,7 +286,7 @@ def build_hierarchical_profile(
             continue
         group_key = _unique_key(_suggest_group_name(control), used_group_keys)
         group_path = group_key
-        group_nodes[group_key] = _group_record(control, group_path)
+        group_nodes[group_key] = _group_record(control, group_path, window_rect)
         group_controls.append((group_path, control))
 
     for group_path, group_control in group_controls:
@@ -297,6 +319,7 @@ def build_hierarchical_profile(
             control=control,
             group_name=group.get("name", group_path),
             target_name=control_key,
+            window_rect=window_rect,
         )
 
         group["controls"][control_key] = record
@@ -305,6 +328,19 @@ def build_hierarchical_profile(
 
 
 def build_controls_dump_for_review(
+    controls: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    controls_by_screen: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for control in controls:
+        controls_by_screen[control.get("screen_key", "main_window")].append(control)
+
+    review_controls: List[Dict[str, Any]] = []
+    for screen_controls in controls_by_screen.values():
+        review_controls.extend(_build_screen_controls_dump_for_review(screen_controls))
+    return review_controls
+
+
+def _build_screen_controls_dump_for_review(
     controls: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
     group_controls: list[tuple[str, Dict[str, Any]]] = []
@@ -332,15 +368,26 @@ def build_controls_dump_for_review(
         else:
             group_path = _smallest_containing_group(control, group_controls)
 
-        review_controls.append(
-            {
-                "index": control.get("index"),
-                "name": control.get("name", ""),
-                "group": group_name_by_path.get(group_path, group_path),
-                "rectangle": _region(control),
-            }
-        )
-        if is_yolo_scan_candidate(control):
+        review_record = {
+            "index": control.get("index"),
+            "name": control.get("name", ""),
+            "screen_key": control.get("screen_key", "main_window"),
+            "screen_title": control.get("screen_title", ""),
+            "group": group_name_by_path.get(group_path, group_path),
+            "rectangle": _absolute_region(control),
+        }
+        if control.get("discovered_by"):
+            review_record["discovered_by"] = control.get("discovered_by")
+        if control.get("rectangle_ratio"):
+            review_record["rectangle_ratio"] = control.get("rectangle_ratio")
+            review_record["rectangle_ratio_units"] = "window_ratio"
+        if control.get("grid_cell"):
+            review_record["grid_cell"] = control.get("grid_cell")
+            review_record["parent_index"] = control.get("parent_index")
+            review_record["source"] = control.get("source")
+
+        review_controls.append(review_record)
+        if is_child_scan_candidate(control):
             review_controls[-1]["scan_children"] = True
 
     return review_controls
@@ -350,15 +397,15 @@ def apply_review_names(
     raw_controls: List[Dict[str, Any]],
     review_controls: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    review_by_index = {
-        control.get("index"): control
+    review_by_key = {
+        (control.get("screen_key", "main_window"), control.get("index")): control
         for control in review_controls
         if isinstance(control, dict) and control.get("index") is not None
     }
     updated_controls = []
     for control in raw_controls:
         updated = dict(control)
-        review = review_by_index.get(control.get("index"))
+        review = review_by_key.get((control.get("screen_key", "main_window"), control.get("index")))
         if review is not None and "name" in review:
             updated["name"] = review.get("name", "")
         if review is not None and "scan_children" in review:
@@ -367,7 +414,7 @@ def apply_review_names(
     return updated_controls
 
 
-def is_yolo_scan_candidate(control: Dict[str, Any]) -> bool:
+def is_child_scan_candidate(control: Dict[str, Any]) -> bool:
     if control.get("scan_children"):
         return True
 
