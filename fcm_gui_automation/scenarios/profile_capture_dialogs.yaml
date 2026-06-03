@@ -1,0 +1,21 @@
+name: "profile_capture_dialogs"
+steps:
+  - action: "capture_profile"
+    click:
+      group: "Operation Group"
+      target: "open_socon_button"
+    window:
+      screen_key: "socon_number_dialog"
+      title: ".*Socon Number.*"
+    close:
+      method: "esc"
+
+  - action: "capture_profile"
+    click:
+      group: "Operation Group"
+      target: "open_dialog_button"
+    window:
+      screen_key: "setting_dialog"
+      title: ".*Setting Dialog.*"
+    close:
+      method: "esc"

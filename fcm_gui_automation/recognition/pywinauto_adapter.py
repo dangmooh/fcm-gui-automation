@@ -9,6 +9,7 @@ import yaml
 from PIL import Image, ImageDraw
 from PIL import ImageGrab
 from pywinauto import Application
+from pywinauto import Desktop
 from pywinauto.findwindows import ElementNotFoundError
 from pywinauto.timings import TimeoutError
 
@@ -116,14 +117,39 @@ class PyWinAutoAdapter(RecognitionAdapter):
         )
 
     def _is_group_match(self, control, group: str) -> bool:
-        info = control.element_info
         group_slug = self._slug(group)
-        return group_slug == self._slug(getattr(info, "name", "") or "")
+        return group_slug in self._control_match_candidates(control)
 
     def _is_target_match(self, control, target: str) -> bool:
-        info = control.element_info
         target_slug = self._slug(target)
-        return target_slug == self._slug(getattr(info, "name", "") or "")
+        return target_slug in self._control_match_candidates(control)
+
+    def _control_match_candidates(self, control) -> set[str]:
+        info = control.element_info
+        raw_values = [
+            getattr(info, "name", "") or "",
+            getattr(info, "automation_id", "") or "",
+            getattr(info, "class_name", "") or "",
+        ]
+        try:
+            raw_values.append(control.automation_id() or "")
+        except Exception:
+            pass
+
+        expanded_values = []
+        for value in raw_values:
+            if not value:
+                continue
+            expanded_values.append(value)
+            expanded_values.extend(segment for segment in value.split(".") if segment)
+            if "." in value:
+                expanded_values.append(value.rsplit(".", 1)[-1])
+
+        candidates = {self._slug(value) for value in expanded_values if value}
+        for value in list(candidates):
+            if "_" in value:
+                candidates.add(value.rsplit("_", 1)[0])
+        return {candidate for candidate in candidates if candidate}
 
     def _find_profile_target(self, group: str | None, target: str) -> dict[str, Any] | None:
         if not self.profile:
@@ -307,12 +333,11 @@ class PyWinAutoAdapter(RecognitionAdapter):
 
     def click(self, target: str, group: str | None = None) -> None:
         control = self._child(target, group=group)
-        clicked = False
         try:
             control.set_focus()
             control.click_input()
             time.sleep(0.2)
-            clicked = True
+            return
         except Exception:
             pass
 
@@ -320,7 +345,7 @@ class PyWinAutoAdapter(RecognitionAdapter):
             control.set_focus()
             control.invoke()
             time.sleep(0.2)
-            clicked = True
+            return
         except Exception:
             pass
 
@@ -328,7 +353,7 @@ class PyWinAutoAdapter(RecognitionAdapter):
             control.set_focus()
             control.click()
             time.sleep(0.2)
-            clicked = True
+            return
         except Exception:
             pass
 
@@ -336,14 +361,205 @@ class PyWinAutoAdapter(RecognitionAdapter):
             control.set_focus()
             control.type_keys("{ENTER}", set_foreground=True)
             time.sleep(0.2)
-            clicked = True
+            return
         except Exception:
             pass
 
-        if not clicked:
-            control.set_focus()
-            control.type_keys("{SPACE}", set_foreground=True)
+        control.set_focus()
+        control.type_keys("{SPACE}", set_foreground=True)
+        time.sleep(0.2)
+
+    def wait_window(self, title_re: str | None = None, timeout: float = 10.0):
+        if self.window is None:
+            raise RuntimeError("Window is not connected.")
+        deadline = time.monotonic() + timeout
+        title_pattern = title_re or ".*"
+        backend = self.app_config.get("backend", "uia")
+        pid = self.window.process_id()
+        last_error = None
+
+        while time.monotonic() < deadline:
+            try:
+                for control in self.window.descendants(control_type="Window"):
+                    title = control.window_text() or ""
+                    if re.search(title_pattern, title):
+                        try:
+                            control.set_focus()
+                        except Exception:
+                            pass
+                        self.logger.info("Detected child window: %s", title)
+                        return control
+
+                desktop = Desktop(backend=backend)
+                for window in desktop.windows(process=pid, visible_only=True):
+                    title = window.window_text() or ""
+                    if re.search(title_pattern, title):
+                        window.wait("visible enabled", timeout=1)
+                        window.set_focus()
+                        self.logger.info("Detected window: %s", title)
+                        return window
+            except Exception as exc:
+                last_error = exc
             time.sleep(0.2)
+
+        raise TimeoutError(f"Window not found: title_re={title_pattern!r}, last_error={last_error}")
+
+    def select_file(
+        self,
+        file_path: str,
+        dialog_title_re: str | None = None,
+        timeout: float = 10.0,
+    ) -> None:
+        path = Path(file_path).expanduser().resolve()
+        if not path.is_file():
+            raise FileNotFoundError(f"File to select not found: {path}")
+
+        dialog = self._wait_file_dialog(dialog_title_re=dialog_title_re, timeout=timeout)
+        dialog.set_focus()
+        editor = self._write_file_dialog_path(dialog, str(path))
+        self._confirm_file_dialog(dialog, editor=editor, timeout=timeout)
+        self.logger.info("Selected file in dialog: %s", path)
+        if self.window is not None:
+            try:
+                self.window.set_focus()
+            except Exception:
+                pass
+
+    def _wait_file_dialog(self, dialog_title_re: str | None, timeout: float):
+        deadline = time.monotonic() + timeout
+        title_pattern = dialog_title_re or r".*(Open|열기|Select|선택|File).*"
+        backend = self.app_config.get("backend", "uia")
+        last_error = None
+
+        while time.monotonic() < deadline:
+            try:
+                if self.window is not None:
+                    for dialog in self.window.descendants(control_type="Window"):
+                        title = dialog.window_text() or ""
+                        if re.search(title_pattern, title) and self._has_file_name_editor(dialog):
+                            try:
+                                dialog.set_focus()
+                            except Exception:
+                                pass
+                            return dialog
+
+                desktop = Desktop(backend=backend)
+                for dialog in desktop.windows(visible_only=True):
+                    title = dialog.window_text() or ""
+                    if not re.search(title_pattern, title):
+                        continue
+                    if self._has_file_name_editor(dialog):
+                        dialog.wait("visible enabled", timeout=1)
+                        return dialog
+            except Exception as exc:
+                last_error = exc
+            time.sleep(0.2)
+
+        raise TimeoutError(f"File dialog not found: title_re={title_pattern!r}, last_error={last_error}")
+
+    def _has_file_name_editor(self, dialog) -> bool:
+        try:
+            return bool(dialog.descendants(control_type="Edit"))
+        except Exception:
+            return False
+
+    def _write_file_dialog_path(self, dialog, file_path: str):
+        editors = dialog.descendants(control_type="Edit")
+        if not editors:
+            raise ElementNotFoundError({"dialog": dialog.window_text(), "control_type": "Edit"})
+
+        editor = max(editors, key=self._file_name_editor_score)
+        wrote = False
+        try:
+            editor.set_focus()
+            editor.set_edit_text(file_path)
+            wrote = True
+        except Exception:
+            pass
+
+        try:
+            editor.click_input()
+            editor.type_keys("^a{BACKSPACE}", set_foreground=True)
+            editor.type_keys(file_path, with_spaces=True, set_foreground=True)
+            wrote = True
+        except Exception:
+            pass
+
+        if not wrote:
+            editor.set_focus()
+            editor.type_keys("^a{BACKSPACE}", set_foreground=True)
+            editor.type_keys(file_path, with_spaces=True, set_foreground=True)
+        return editor
+
+    def _file_name_editor_score(self, editor) -> tuple[int, int]:
+        try:
+            automation_id = editor.element_info.automation_id or ""
+        except Exception:
+            automation_id = ""
+        try:
+            name = editor.window_text() or editor.element_info.name or ""
+        except Exception:
+            name = ""
+        try:
+            top = int(editor.rectangle().top)
+        except Exception:
+            top = 0
+
+        score = 0
+        if automation_id == "1148":
+            score += 100
+        if "file" in name.lower() or "파일" in name:
+            score += 20
+        return score, top
+
+    def _confirm_file_dialog(self, dialog, editor=None, timeout: float = 10.0) -> None:
+        if editor is not None:
+            try:
+                editor.set_focus()
+                editor.type_keys("{ENTER}", set_foreground=True)
+                if self._wait_until_dialog_closed(dialog, timeout=min(3.0, timeout)):
+                    return
+            except Exception:
+                pass
+
+        button_patterns = ("Open", "열기", "OK", "확인", "Select", "선택")
+        for button in dialog.descendants(control_type="Button"):
+            try:
+                name = button.window_text() or button.element_info.name or ""
+            except Exception:
+                continue
+            try:
+                automation_id = button.element_info.automation_id or ""
+            except Exception:
+                automation_id = ""
+            if automation_id != "1" and not any(pattern.lower() in name.lower() for pattern in button_patterns):
+                continue
+            try:
+                button.click_input()
+                if self._wait_until_dialog_closed(dialog, timeout=min(3.0, timeout)):
+                    return
+            except Exception:
+                try:
+                    button.invoke()
+                    if self._wait_until_dialog_closed(dialog, timeout=min(3.0, timeout)):
+                        return
+                except Exception:
+                    continue
+
+        dialog.type_keys("{ENTER}", set_foreground=True)
+        if not self._wait_until_dialog_closed(dialog, timeout=min(3.0, timeout)):
+            raise TimeoutError(f"File dialog did not close after confirmation: {dialog.window_text()!r}")
+
+    def _wait_until_dialog_closed(self, dialog, timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                if not dialog.exists(timeout=0.1):
+                    return True
+            except Exception:
+                return True
+            time.sleep(0.2)
+        return False
 
     def verify_text(self, target: str, expected: str, group: str | None = None) -> None:
         control = self._child(target, group=group)

@@ -153,15 +153,45 @@ scenario runs and appends those controllers as new screens. A
 `discovery_summary.yaml` file is written with per-scenario success, failure, and
 new-screen counts.
 
+For dialogs that should be profiled without completing the full runtime flow,
+write an explicit `capture_profile` discovery step. The action clicks a reviewed
+main-window trigger, captures the matching dialog/window profile, appends its
+controllers to all profile outputs, closes the dialog, and returns focus to the
+main window.
+
+```yaml
+name: capture_dialog_profiles
+steps:
+  - action: capture_profile
+    click:
+      group: Operation Group
+      target: open_socon_button
+    window:
+      screen_key: socon_number_dialog
+      title: ".*Socon Number.*"
+    close:
+      method: esc
+
+  - action: capture_profile
+    click:
+      group: Operation Group
+      target: open_dialog_button
+    window:
+      screen_key: setting_dialog
+      title: ".*Setting Dialog.*"
+    close:
+      method: esc
+```
+
 Example discovered screen metadata:
 
 ```yaml
 discovered_by:
-  type: scenario_step
-  scenario_name: qt_complex_test
-  scenario_path: d:\app\fcm_gui_automation\scenarios\qt_complex_test.yaml
-  step_index: 18
-  action: click
+  type: capture_profile_action
+  scenario_name: capture_dialog_profiles
+  scenario_path: d:\app\fcm_gui_automation\scenarios\profile_capture_dialogs.yaml
+  step_index: 1
+  action: capture_profile
   trigger_target: open_dialog_button
   parent_screen: main_window
 ```
@@ -179,6 +209,8 @@ for manual review.
    actions such as opening a dialog or switching tabs.
 6. Use `--discover-all-scenarios` when you want to run the full scenario folder
    once and collect controllers from newly opened windows.
+7. Use `capture_profile` steps when a main-window button should open a dialog
+   only long enough to profile that dialog and then close it.
 
 ## Runtime Lookup
 

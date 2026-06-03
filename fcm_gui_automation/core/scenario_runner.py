@@ -11,9 +11,13 @@ class ScenarioRunner:
 
     def run(self, scenario: dict) -> bool:
         normalized = self._normalize_scenario(scenario)
+        setup_steps = normalized.get("setup", []) or []
         steps = normalized.get("steps", [])
+        if not isinstance(setup_steps, list):
+            raise ValueError("Scenario setup must be a list.")
         if not steps:
             raise ValueError("Scenario has no steps.")
+        run_steps = setup_steps + steps
 
         scenario_name = normalized.get("name", "unnamed_scenario")
         scenario_fail_safe = normalized.get("fail_safe", {}) or {}
@@ -23,13 +27,15 @@ class ScenarioRunner:
         index = 0
         decision_retry_counts: dict[int, int] = {}
 
-        while index < len(steps):
-            step = steps[index]
+        while index < len(run_steps):
+            step = run_steps[index]
             step_number = index + 1
+            phase = "setup" if index < len(setup_steps) else "steps"
             self.logger.info(
-                "Step %s/%s: %s",
+                "%s step %s/%s: %s",
+                phase,
                 step_number,
-                len(steps),
+                len(run_steps),
                 step.get("name") or step.get("action"),
             )
 

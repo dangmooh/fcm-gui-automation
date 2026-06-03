@@ -12,7 +12,7 @@ from app_profile_generator.inspection.control_dumper import dump_controls, dump_
 from app_profile_generator.inspection.hierarchical_profile import build_hierarchical_profile
 
 
-DISCOVERY_ACTIONS = {"click", "set_text"}
+DISCOVERY_ACTIONS = {"click", "set_text", "capture_profile"}
 READ_ONLY_ACTIONS = {"launch_or_connect", "verify_text", "verify_color", "screenshot"}
 STOP_ACTIONS = {"safe_close"}
 
@@ -65,6 +65,35 @@ def discover_profile_from_scenario(
         if action in READ_ONLY_ACTIONS:
             continue
         if action not in DISCOVERY_ACTIONS:
+            continue
+
+        if action == "capture_profile":
+            try:
+                captured = _execute_capture_profile_step(
+                    profile=profile,
+                    initial_window=initial_window,
+                    scenario_name=scenario_name,
+                    scenario_path=scenario_path,
+                    step=step,
+                    step_index=step_index,
+                    delay=delay,
+                    discovered_controls=discovered_controls,
+                )
+                seen_signatures.update(captured)
+            except Exception as exc:
+                if step_errors is not None:
+                    step_errors.append(
+                        {
+                            "step_index": step_index,
+                            "action": action,
+                            "target": _capture_profile_trigger(step).get("target"),
+                            "group": _capture_profile_trigger(step).get("group"),
+                            "error": str(exc),
+                        }
+                    )
+                if continue_on_step_error:
+                    continue
+                raise
             continue
 
         trigger_target = step.get("target")
@@ -182,6 +211,227 @@ def discover_profile_from_scenario(
             seen_signatures.add(signature)
 
     return profile
+
+
+def _execute_capture_profile_step(
+    profile: Dict[str, Any],
+    initial_window,
+    scenario_name: str,
+    scenario_path: Path | None,
+    step: Dict[str, Any],
+    step_index: int,
+    delay: float,
+    discovered_controls: List[Dict[str, Any]] | None = None,
+) -> set[tuple]:
+    pid = initial_window.process_id()
+    trigger = _capture_profile_trigger(step)
+    target = trigger.get("target")
+    if not target:
+        raise ValueError(f"capture_profile requires click.target or trigger.target: {step}")
+
+    _execute_step_for_discovery(
+        pid,
+        {
+            "action": "click",
+            "target": target,
+            "group": trigger.get("group"),
+        },
+    )
+    time.sleep(delay)
+
+    window_spec = step.get("window") or {}
+    if not isinstance(window_spec, dict):
+        raise ValueError("capture_profile.window must be a mapping.")
+
+    title_re = window_spec.get("title") or window_spec.get("title_re") or step.get("title")
+    screen_key = window_spec.get("screen_key") or step.get("screen_key")
+    if not screen_key:
+        screen_key = _screen_key(scenario_name, step_index, "capture_profile", target, 0)
+
+    captured_signatures = set()
+    captured = _capture_matching_window(
+        profile=profile,
+        initial_window=initial_window,
+        scenario_name=scenario_name,
+        scenario_path=scenario_path,
+        step=step,
+        step_index=step_index,
+        trigger_target=target,
+        title_re=title_re,
+        screen_key=screen_key,
+        discovered_controls=discovered_controls,
+    )
+    captured_signatures.add(captured["signature"])
+
+    _close_captured_window(captured["window"], step.get("close"))
+    try:
+        initial_window.set_focus()
+    except Exception:
+        pass
+    time.sleep(delay)
+    return captured_signatures
+
+
+def _capture_profile_trigger(step: Dict[str, Any]) -> Dict[str, Any]:
+    trigger = step.get("click") or step.get("trigger") or {}
+    if not isinstance(trigger, dict):
+        raise ValueError("capture_profile click/trigger must be a mapping.")
+    if not trigger and step.get("target"):
+        trigger = {"target": step.get("target"), "group": step.get("group")}
+    return trigger
+
+
+def _capture_matching_window(
+    profile: Dict[str, Any],
+    initial_window,
+    scenario_name: str,
+    scenario_path: Path | None,
+    step: Dict[str, Any],
+    step_index: int,
+    trigger_target: str,
+    title_re: str | None,
+    screen_key: str,
+    discovered_controls: List[Dict[str, Any]] | None = None,
+) -> Dict[str, Any]:
+    pid = initial_window.process_id()
+    title_pattern = title_re or ".*"
+
+    for window in _visible_windows_for_pid(pid):
+        if _window_identity(window) == _window_identity(initial_window):
+            continue
+        title = window.window_text() or ""
+        if not re.search(title_pattern, title):
+            continue
+        controls = dump_controls(window)
+        window_info = dump_window_info(window)
+        return _store_captured_screen(
+            profile=profile,
+            controls=controls,
+            window=window,
+            window_title=window_info["window_title"],
+            window_rect=window_info["window_rect"],
+            scenario_name=scenario_name,
+            scenario_path=scenario_path,
+            step=step,
+            step_index=step_index,
+            trigger_target=trigger_target,
+            screen_key=screen_key,
+            window_source="top_level_window",
+            discovered_controls=discovered_controls,
+        )
+
+    main_controls = dump_controls(initial_window)
+    for embedded in _embedded_window_control_groups(initial_window, main_controls):
+        title = embedded["title"]
+        if not re.search(title_pattern, title):
+            continue
+        return _store_captured_screen(
+            profile=profile,
+            controls=embedded["controls"],
+            window=initial_window,
+            window_title=title,
+            window_rect=embedded["window_rect"],
+            scenario_name=scenario_name,
+            scenario_path=scenario_path,
+            step=step,
+            step_index=step_index,
+            trigger_target=trigger_target,
+            screen_key=screen_key,
+            window_source="embedded_window_control",
+            discovered_controls=discovered_controls,
+        )
+
+    raise ValueError(f"capture_profile window not found: title={title_pattern!r}, target={trigger_target!r}")
+
+
+def _store_captured_screen(
+    profile: Dict[str, Any],
+    controls: List[Dict[str, Any]],
+    window,
+    window_title: str,
+    window_rect: Dict[str, Any],
+    scenario_name: str,
+    scenario_path: Path | None,
+    step: Dict[str, Any],
+    step_index: int,
+    trigger_target: str,
+    screen_key: str,
+    window_source: str,
+    discovered_controls: List[Dict[str, Any]] | None = None,
+) -> Dict[str, Any]:
+    final_screen_key = _unique_screen_key(profile, screen_key)
+    discovered_by = {
+        "type": "capture_profile_action",
+        "window_source": window_source,
+        "scenario_name": scenario_name,
+        "scenario_path": str(scenario_path) if scenario_path else None,
+        "step_index": step_index,
+        "action": "capture_profile",
+        "trigger_target": trigger_target,
+        "parent_screen": "main_window",
+    }
+    discovered_profile = build_hierarchical_profile(
+        app_info={
+            "window_title": window_title,
+            "window_rect": window_rect,
+        },
+        controls=controls,
+        screen_key=final_screen_key,
+        discovered_by=discovered_by,
+    )
+    _merge_profile_screen(profile, discovered_profile, final_screen_key)
+    if discovered_controls is not None:
+        discovered_controls.extend(
+            _controls_for_output(
+                controls=controls,
+                screen_key=final_screen_key,
+                screen_title=window_title,
+                window_rect=window_rect,
+                discovered_by=discovered_by,
+            )
+        )
+    return {
+        "window": window,
+        "screen_key": final_screen_key,
+        "signature": _controls_signature(controls),
+    }
+
+
+def _close_captured_window(window, close_spec: Any) -> None:
+    method = "esc"
+    if isinstance(close_spec, str):
+        method = close_spec
+    elif isinstance(close_spec, dict):
+        method = close_spec.get("method", method)
+
+    if method == "none":
+        return
+
+    if method == "close":
+        try:
+            window.close()
+            time.sleep(0.5)
+            return
+        except Exception:
+            pass
+
+    if method in {"esc", "escape"}:
+        try:
+            window.set_focus()
+        except Exception:
+            pass
+        try:
+            window.type_keys("{ESC}", set_foreground=True)
+            time.sleep(0.5)
+            return
+        except Exception:
+            pass
+
+    try:
+        window.close()
+        time.sleep(0.5)
+    except Exception:
+        pass
 
 
 def discover_profile_from_scenarios(

@@ -1,0 +1,40 @@
+name: "socon_file_setup_test"
+setup:
+  - action: "launch_or_connect"
+
+  - action: "click"
+    target: "open_socon_button"
+
+  - action: "wait_window"
+    title: ".*Socon Number.*"
+    timeout: 10
+
+  - action: "set_text"
+    target: "socon_number_input"
+    value: "12345"
+
+  - action: "click"
+    target: "socon_number_ok_button"
+
+  - action: "select_file"
+    dialog_title: ".*Select Socon File.*"
+    file_path: "D:\\app\\fcm_gui_automation\\test_data\\socon_sample.csv"
+    timeout: 10
+
+steps:
+  - action: "verify_text"
+    target: "status_label"
+    value: "SOCON FILE SELECTED"
+
+  - action: "verify_text"
+    target: "status_box"
+    value: "Socon Number: 12345"
+
+  - action: "verify_text"
+    target: "status_box"
+    value: "socon_sample.csv"
+
+  - action: "screenshot"
+    value: "socon_file_setup_success"
+
+  - action: "safe_close"

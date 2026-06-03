@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
+    QFileDialog,
     QFrame,
     QGridLayout,
     QGroupBox,
@@ -141,12 +142,44 @@ class SettingDialog(QDialog):
         self.setLayout(layout)
 
 
+class SoconNumberDialog(QDialog):
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Socon Number")
+        self.setObjectName("socon_number_dialog")
+        self.resize(360, 140)
+
+        layout = QGridLayout()
+        layout.addWidget(QLabel("Socon Number"), 0, 0)
+
+        self.number_input = QLineEdit()
+        self.number_input.setObjectName("socon_number_input")
+        self.number_input.setPlaceholderText("Enter number")
+        layout.addWidget(self.number_input, 0, 1, 1, 2)
+
+        ok_button = QPushButton("OK")
+        ok_button.setObjectName("socon_number_ok_button")
+        cancel_button = QPushButton("Cancel")
+        cancel_button.setObjectName("socon_number_cancel_button")
+        ok_button.clicked.connect(self.accept)
+        cancel_button.clicked.connect(self.reject)
+        layout.addWidget(ok_button, 1, 1)
+        layout.addWidget(cancel_button, 1, 2)
+
+        self.setLayout(layout)
+
+    def number(self) -> str:
+        return self.number_input.text().strip()
+
+
 class ControlPanelWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("PyQt Input Panel")
         self.resize(960, 840)
-        self.dialogs: list[SettingDialog] = []
+        self.dialogs: list[QDialog] = []
+        self.socon_number = ""
+        self.socon_file_path = ""
         self._build_ui()
         self.reset_state()
 
@@ -287,6 +320,7 @@ class ControlPanelWindow(QMainWindow):
             ("Reset", "reset_button", self.reset_state),
             ("Apply", "apply_button", lambda: self.handle_action("apply_button")),
             ("Open Dialog", "open_dialog_button", self.open_setting_dialog),
+            ("Open Socon", "open_socon_button", self.open_socon_flow),
             ("Load List", "load_list_button", self.load_list),
             ("Clear List", "clear_list_button", self.clear_list),
             ("Run Test", "run_test_button", self.run_test),
@@ -377,6 +411,43 @@ class ControlPanelWindow(QMainWindow):
         self.status_label.setText("DIALOG OPENED")
         self._set_log(["Setting Dialog opened."])
 
+    def open_socon_flow(self) -> None:
+        dialog = SoconNumberDialog(self)
+        dialog.setModal(False)
+        dialog.accepted.connect(lambda: self.open_socon_file_dialog(dialog))
+        dialog.rejected.connect(lambda: self._set_log(["Socon flow cancelled."]))
+        dialog.show()
+        self.dialogs.append(dialog)
+        self.status_label.setText("SOCON NUMBER")
+        self._set_log(["Socon number dialog opened."])
+
+    def open_socon_file_dialog(self, dialog: SoconNumberDialog) -> None:
+        self.socon_number = dialog.number()
+        selected, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Socon File",
+            "",
+            "Data files (*.csv *.txt *.yaml *.yml);;All files (*.*)",
+        )
+        if selected:
+            self.socon_file_path = selected
+            self.status_label.setText("SOCON FILE SELECTED")
+            self._set_log(
+                [
+                    "Socon file selected.",
+                    f"Socon Number: {self.socon_number or '(empty)'}",
+                    f"File: {self.socon_file_path}",
+                ]
+            )
+        else:
+            self.status_label.setText("SOCON FILE CANCELLED")
+            self._set_log(
+                [
+                    "Socon file selection cancelled.",
+                    f"Socon Number: {self.socon_number or '(empty)'}",
+                ]
+            )
+
     def load_list(self) -> None:
         self.list_widget.clear()
         for item in ["Voltage check", "Current check", "Frequency check", "Power check"]:
@@ -420,6 +491,8 @@ class ControlPanelWindow(QMainWindow):
         self.frequency_input.clear()
         self.power_input.clear()
         self.mode_combo.setCurrentIndex(0)
+        self.socon_number = ""
+        self.socon_file_path = ""
         self.list_widget.clear()
         self.connection_lamp.set_color("gray")
         self.running_lamp.set_color("gray")

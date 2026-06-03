@@ -15,6 +15,8 @@ class ActionExecutor:
             "click": self._click,
             "verify_text": self._verify_text,
             "verify_color": self._verify_color,
+            "wait_window": self._wait_window,
+            "select_file": self._select_file,
             "screenshot": self._screenshot,
             "safe_close": self._safe_close,
         }
@@ -75,6 +77,22 @@ class ActionExecutor:
             region=region,
             expected_color=step["expected_color"],
             min_ratio=float(step["min_ratio"]),
+        )
+
+    def _wait_window(self, step: dict) -> None:
+        self.adapter.wait_window(
+            title_re=step.get("title") or step.get("title_re"),
+            timeout=float(step.get("timeout", 10)),
+        )
+
+    def _select_file(self, step: dict) -> None:
+        file_path = step.get("file_path") or step.get("path") or step.get("value")
+        if not file_path:
+            raise ValueError("select_file requires file_path.")
+        self.adapter.select_file(
+            file_path=file_path,
+            dialog_title_re=step.get("dialog_title") or step.get("title") or step.get("title_re"),
+            timeout=float(step.get("timeout", 10)),
         )
 
     def _screenshot(self, step: dict) -> None:
