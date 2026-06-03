@@ -1,0 +1,39 @@
+name: "socon_profile_runtime_validation"
+setup:
+  - action: "launch_or_connect"
+
+  - action: "click"
+    group: "Operation Group"
+    target: "open_socon_button"
+
+  - action: "wait_window"
+    title: ".*Socon Number.*"
+    timeout: 10
+
+  - action: "set_text"
+    group: "Socon Number"
+    target: "control_6"
+    value: "28"
+
+  - action: "click"
+    group: "Socon Number"
+    target: "ok"
+
+  - action: "select_file"
+    dialog_title: ".*Select Socon File.*"
+    file_path: "D:\\app\\fcm_gui_automation\\test_data\\socon_sample.csv"
+    timeout: 10
+
+steps:
+  - action: "verify_text"
+    target: "status_label"
+    value: "SOCON FILE SELECTED"
+
+  - action: "verify_text"
+    target: "status_box"
+    value: "Socon Number: 28"
+
+  - action: "screenshot"
+    value: "socon_profile_runtime_validation_success"
+
+  - action: "safe_close"

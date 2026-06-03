@@ -1,0 +1,19 @@
+name: "color_test"
+elements:
+  status_lamp:
+    type: "indicator"
+    region:
+      x: 20
+      y: 105
+      width: 660
+      height: 70
+steps:
+  - action: "launch_or_connect"
+  - action: "verify_color"
+    name: "status lamp blue check"
+    target: "status_lamp"
+    expected_color: "blue"
+    min_ratio: 0.3
+  - action: "screenshot"
+    value: "color_test"
+  - action: "safe_close"

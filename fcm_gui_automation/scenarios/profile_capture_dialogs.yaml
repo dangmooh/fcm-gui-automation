@@ -1,0 +1,9 @@
+name: "profile_capture_dialogs"
+steps:
+  - action: "capture_profile"
+    group: "Operation Group"
+    target: "open_socon_button"
+
+  - action: "capture_profile"
+    group: "Operation Group"
+    target: "open_dialog_button"

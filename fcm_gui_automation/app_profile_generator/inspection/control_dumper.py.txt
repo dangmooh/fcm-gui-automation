@@ -1,0 +1,177 @@
+from collections import defaultdict
+from typing import Dict, Any, List
+
+from fcm_gui_automation.app_profile_generator.inspection.grid_cells import GRID_CLASS_NAME
+from fcm_gui_automation.app_profile_generator.inspection.grid_cells import detect_mfc_grid_cells_for_control
+from fcm_gui_automation.app_profile_generator.runtime.screenshot_capture import capture_window_image
+
+
+CONTROL_TYPE_MAP = {
+    "Button": "button",
+    "Edit": "input",
+    "Text": "text",
+    "CheckBox": "checkbox",
+    "ComboBox": "combobox",
+    "TabItem": "tab",
+    "MenuItem": "menu",
+    "ListItem": "list_item",
+    "Cell": "grid_cell",
+}
+
+
+def rect_to_dict(rect) -> Dict[str, int]:
+    return {
+        "x": rect.left,
+        "y": rect.top,
+        "width": rect.width(),
+        "height": rect.height(),
+    }
+
+
+def map_control_type(control_type: str) -> str:
+    return CONTROL_TYPE_MAP.get(control_type, "control")
+
+
+def safe_getattr(obj, attr_name: str, default=None):
+    try:
+        value = getattr(obj, attr_name)
+        if callable(value):
+            return value()
+        return value
+    except Exception:
+        return default
+
+
+def _ratio_region(rect: Dict[str, Any], window_rect: Dict[str, Any] | None) -> Dict[str, float] | None:
+    if not window_rect:
+        return None
+    window_width = max(1.0, float(window_rect.get("width", 0)))
+    window_height = max(1.0, float(window_rect.get("height", 0)))
+    window_x = float(window_rect.get("x", 0))
+    window_y = float(window_rect.get("y", 0))
+    return {
+        "x": round((float(rect.get("x", 0)) - window_x) / window_width, 6),
+        "y": round((float(rect.get("y", 0)) - window_y) / window_height, 6),
+        "width": round(float(rect.get("width", 0)) / window_width, 6),
+        "height": round(float(rect.get("height", 0)) / window_height, 6),
+    }
+
+
+def _add_ratio_metadata(control: Dict[str, Any], window_rect: Dict[str, Any]) -> Dict[str, Any]:
+    ratio = _ratio_region(control.get("rectangle", {}) or {}, window_rect)
+    if ratio is not None:
+        control["rectangle_ratio"] = ratio
+        control["rectangle_ratio_units"] = "window_ratio"
+    return control
+
+
+def dump_controls(window) -> List[Dict[str, Any]]:
+    controls = []
+    window_rect_obj = window.rectangle()
+    window_rect = rect_to_dict(window_rect_obj)
+    screenshot = None
+
+    try:
+        descendants = window.descendants()
+    except Exception as exc:
+        raise RuntimeError(f"Failed to get descendants: {exc}") from exc
+
+    for idx, ctrl in enumerate(descendants):
+        try:
+            info = ctrl.element_info
+            rect = ctrl.rectangle()
+
+            if rect.width() <= 0 or rect.height() <= 0:
+                continue
+
+            control_type = info.control_type or "Unknown"
+            element_type = map_control_type(control_type)
+            class_name = info.class_name or ""
+
+            control = _add_ratio_metadata(
+                {
+                    "index": idx,
+                    "name": info.name or "",
+                    "control_type": control_type,
+                    "element_type": element_type,
+                    "automation_id": safe_getattr(ctrl, "automation_id", ""),
+                    "class_name": class_name,
+                    "rectangle": rect_to_dict(rect),
+                    "rectangle_units": "absolute",
+                    "enabled": safe_getattr(ctrl, "is_enabled", None),
+                    "visible": safe_getattr(ctrl, "is_visible", None),
+                },
+                window_rect,
+            )
+            controls.append(control)
+
+            if class_name == GRID_CLASS_NAME:
+                if screenshot is None:
+                    screenshot = capture_window_image(window).convert("RGB")
+                cell_start_index = 100000 + (idx * 1000)
+                cells = detect_mfc_grid_cells_for_control(
+                    grid=control,
+                    image=screenshot,
+                    window_rect=window_rect_obj,
+                    start_index=cell_start_index,
+                )
+                controls.extend(_add_ratio_metadata(cell, window_rect) for cell in cells)
+
+        except Exception as exc:
+            controls.append({"index": idx, "error": str(exc)})
+
+    return controls
+
+
+def build_elements_from_controls(
+    controls: List[Dict[str, Any]],
+    window_rect: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    counters = defaultdict(int)
+    elements = {}
+
+    for control in controls:
+        if "error" in control:
+            continue
+
+        element_type = control.get("element_type", "control")
+        counters[element_type] += 1
+        element_id = f"auto_{element_type}_{counters[element_type]:03d}"
+        rect = control.get("rectangle", {})
+
+        region = control.get("rectangle_ratio") or _ratio_region(rect, window_rect) or {
+            "x": rect.get("x", 0),
+            "y": rect.get("y", 0),
+            "width": rect.get("width", 0),
+            "height": rect.get("height", 0),
+        }
+
+        elements[element_id] = {
+            "type": element_type,
+            "text": control.get("name", ""),
+            "screen_key": control.get("screen_key", "main_window"),
+            "screen_title": control.get("screen_title", ""),
+            "find_by": {
+                "priority": ["uia", "region"],
+                "uia": {
+                    "title": control.get("name", ""),
+                    "control_type": control.get("control_type", ""),
+                    "automation_id": control.get("automation_id", ""),
+                    "class_name": control.get("class_name", ""),
+                },
+                "region": region,
+                "region_units": "window_ratio" if window_rect else "absolute",
+            },
+        }
+
+    return elements
+
+
+def dump_window_info(window) -> Dict[str, Any]:
+    rect = window.rectangle()
+    return {
+        "window_title": window.window_text(),
+        "process_id": window.process_id(),
+        "window_rect": rect_to_dict(rect),
+        "backend": "uia",
+    }

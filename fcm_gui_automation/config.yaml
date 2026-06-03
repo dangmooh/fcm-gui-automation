@@ -1,0 +1,11 @@
+app:
+  backend: "uia"
+  title_re: "^PyQt Input Panel$"
+  python_command: "python"
+  script_path: "..\\fcm_desktop.py"
+  start_timeout: 10
+  focus_timeout: 10
+
+reports:
+  screenshots_dir: "reports/screenshots"
+  logs_dir: "reports/logs"
